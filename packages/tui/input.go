@@ -54,6 +54,7 @@ const (
 	KeyMouseLeft
 	KeyMouseDrag
 	KeyMouseRelease
+	KeyProgramStatus // terminal capability reply, not a keypress
 )
 
 // Reader parses a byte stream into Key events. It understands basic
@@ -178,6 +179,8 @@ func (r *Reader) readEscape() (Key, error) {
 	switch b {
 	case '[':
 		return r.readCSI()
+	case ']':
+		return r.readOSC()
 	case 'O':
 		// SS3 sequences. Terminals in application cursor mode use these
 		// for arrows, while some terminals also use them for Home and End.

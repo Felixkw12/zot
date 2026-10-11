@@ -577,6 +577,13 @@ type Interactive struct {
 	extPanel          *extPanelDialog
 	llamaConfigured   bool
 
+	programStatus      *tui.ProgramStatus
+	programOutcome     string
+	programError       string
+	programSessionPath string
+	programSessionName string
+	programNameLoaded  bool
+
 	pinnedSkillsPending bool
 	pinnedSkills        []*skills.Skill
 
@@ -835,6 +842,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 	defer term.Write([]byte(tui.SeqMouseOff + tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.SeqShowCursor))
 	defer i.rend.CloseHistory()
 	defer i.clearMouseSelection()
+	defer i.startProgramStatus()()
 	i.applyInputCursorColor()
 
 	// Streaming pacer: drains buffered text deltas at a steady rate
@@ -1395,6 +1403,7 @@ func (i *Interactive) scrollToBottom() {
 func (i *Interactive) redraw() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.syncProgramStatusLocked()
 	if i.rend.MouseSelectionActive() {
 		return
 	}
@@ -2257,6 +2266,13 @@ func (i *Interactive) restoreConfirmFocus() {
 }
 
 func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
+	if k.Kind == tui.KeyProgramStatus {
+		i.mu.Lock()
+		i.syncProgramStatusLocked()
+		i.programStatus.Supported()
+		i.mu.Unlock()
+		return false
+	}
 	defer i.restoreConfirmFocus()
 	if i.handleMouseKey(k) {
 		return false
@@ -2416,6 +2432,11 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			return false
 		}
 		act := i.sessionDialog.HandleKey(k)
+		if act.Renamed {
+			i.mu.Lock()
+			i.programNameLoaded = false
+			i.mu.Unlock()
+		}
 		if act.Select {
 			i.applySessionSelection(act.Path)
 		}
@@ -5921,6 +5942,8 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 	i.mu.Lock()
 	i.busy = true
 	i.compacting = true
+	i.programOutcome = "working"
+	i.syncProgramStatusLocked()
 	if auto {
 		i.spin.StartFixed("condensing history")
 		i.autoCompacting = true
@@ -6029,6 +6052,7 @@ func (i *Interactive) runCompact(parent context.Context, auto bool) {
 				i.lastCtxInput = 0
 			}
 		}
+		i.finishProgramStatusLocked(ctx, err, hasNext || continueExisting)
 		i.mu.Unlock()
 		i.invalidate()
 
@@ -6096,6 +6120,8 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 	ctx, cancel := context.WithCancel(parent)
 	i.busy = true
 	i.shellRunning = true
+	i.programOutcome = "working"
+	i.syncProgramStatusLocked()
 	i.shellLive = "$ " + cmd + "\n\n"
 	i.cancelTurn = cancel
 	i.statusErr = ""
@@ -6165,6 +6191,11 @@ func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
 			i.statusOK = "shell command finished"
 			i.statusErr = ""
 		}
+		statusErr := err
+		if statusErr == nil && res.IsError {
+			statusErr = fmt.Errorf("shell command failed")
+		}
+		i.finishProgramStatusLocked(ctx, statusErr, false)
 		i.mu.Unlock()
 		i.invalidate()
 		if awaitingPre {
@@ -6243,6 +6274,8 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 		prompt = i.preloadPinnedPromptLocked(prompt)
 	}
 	i.busy = true
+	i.programOutcome = "working"
+	i.syncProgramStatusLocked()
 	i.spin.Start()
 	i.cancelTurn = cancel
 	i.statusErr = ""
@@ -6407,6 +6440,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 			agentQueued = i.agent.QueuedMessageCount()
 		}
 		shouldAutoCompact := !awaitingPre && !hasNext && agentQueued == 0 && err == nil && ctx.Err() == nil && i.shouldAutoCompactLocked()
+		i.finishProgramStatusLocked(ctx, err, hasNext || recoverContextOverflow || shouldAutoCompact)
 		i.mu.Unlock()
 		i.invalidate()
 		parent := i.runCtx

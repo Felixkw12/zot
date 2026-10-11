@@ -409,7 +409,7 @@ func RenameSession(path, title string) error {
 		return err
 	}
 	defer f.Close()
-	line, _ := json.Marshal(map[string]string{"type": "rename", "title": title})
+	line, _ := json.Marshal(map[string]any{"type": "rename", "title": title, "explicit": true})
 	line = append(line, '\n')
 	_, err = f.Write(line)
 	return err

@@ -1081,6 +1081,26 @@ These values contain no credentials. Use `ZOT_AGENT` or `AI_AGENT` to distinguis
 
 Interactive shell commands receive model metadata even with `--no-session`; only session ID and file are omitted. Newly launched commands reflect session switches, working-directory changes, and reasoning-level changes. Turning reasoning off removes `ZOT_REASONING_LEVEL`. Already-running subprocesses retain the environment they inherited at launch.
 
+## Program status
+
+In interactive mode, zot reports activity through the Program Status Protocol (OSC 7501). Supporting terminals and dashboards can display these states:
+
+| State | When |
+|---|---|
+| `idle` | Startup or cancellation |
+| `working` | A submitted agent run or shell command is in progress, with the explicit session name when available. Compaction uses "Compacting context". |
+| `blocked` | A tool confirmation, login dialog, extension panel, or model recovery dialog is waiting for input. Reports include a title and a `permission`, `auth`, or `question` category. |
+| `done` | Work finished successfully, with the explicit session name when available. |
+| `error` | Work failed without an automatic retry. The message is the first line of the error. |
+
+Reports include the state, application identifier (`zot`), and optional waiting category and message. Message control characters become spaces, text is limited to 2048 UTF-8 bytes without splitting characters, and the wire message is base64-encoded. This encoding is not encryption. Names, dialog titles, and error lines may contain sensitive information, so disable reporting if you do not want to share that metadata with the terminal.
+
+Zot does not use transcript text, tool previews, dialog bodies, or model output as status messages. Prompt-derived session-picker titles are excluded. Names update after renaming through `/sessions`, and switching sessions clears the previous outcome. Legacy branch names are omitted because older rename records may be generated from prompts. Rename such a branch again to report an explicit name. Closing zot clears its reported status.
+
+By default, zot asks the terminal for support and sends reports only after an acknowledgement. Automatic detection is skipped for non-TTY input/output and detected tmux or screen sessions. Set `ZOT_PROGRAM_STATUS=1` to force reporting without detection, or `ZOT_PROGRAM_STATUS=0` to disable it. Forcing reports does not make a multiplexer forward them.
+
+Reporting is limited to the interactive client and work submitted there. It does not describe background agents or work submitted by other attached clients. Print, JSON, RPC, and bot modes do not emit these terminal sequences.
+
 ## Inline images
 
 When a tool returns an image (for example `read` on a PNG), zot renders it inline on terminals that support it: **Ghostty**, **Kitty**, **iTerm2**, **WezTerm**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZOT_INLINE_IMAGES` env var:

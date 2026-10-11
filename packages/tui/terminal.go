@@ -45,6 +45,11 @@ func NewProcTerm() *ProcTerm {
 
 func (p *ProcTerm) Write(b []byte) (int, error) { return p.out.Write(b) }
 
+// IsTTY reports whether both input and output are terminals.
+func (p *ProcTerm) IsTTY() bool {
+	return term.IsTerminal(int(p.in.Fd())) && term.IsTerminal(int(p.out.Fd()))
+}
+
 func (p *ProcTerm) Size() (int, int) {
 	w, h, err := term.GetSize(int(p.out.Fd()))
 	if err != nil || w <= 0 || h <= 0 {
