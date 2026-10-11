@@ -537,6 +537,22 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 		finalErr error
 	)
 
+	// Final snapshots are authoritative. Some Responses streams omit or
+	// truncate argument deltas, including when several calls are interleaved.
+	finishFunctionArgs := func(it *itemState, arguments *string) {
+		if it == nil || it.kind != "function_call" || arguments == nil || *arguments == "" {
+			return
+		}
+		previous := it.argsBuf.String()
+		if strings.HasPrefix(*arguments, previous) {
+			if delta := (*arguments)[len(previous):]; delta != "" {
+				out <- EventToolArgs{ID: it.callID, Delta: delta}
+			}
+		}
+		it.argsBuf.Reset()
+		it.argsBuf.WriteString(*arguments)
+	}
+
 	assemble := func() Message {
 		content := []Content{}
 		for _, idx := range order {
@@ -668,6 +684,13 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 					it.argsBuf.WriteString(p.Delta)
 					out <- EventToolArgs{ID: it.callID, Delta: p.Delta}
 				}
+			case "response.function_call_arguments.done":
+				var p struct {
+					OutputIndex int     `json:"output_index"`
+					Arguments   *string `json:"arguments"`
+				}
+				_ = json.Unmarshal([]byte(ev.Data), &p)
+				finishFunctionArgs(items[p.OutputIndex], p.Arguments)
 			case "response.custom_tool_call_input.delta":
 				var p struct {
 					OutputIndex int    `json:"output_index"`
@@ -697,6 +720,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 						Type             string  `json:"type"`
 						ID               string  `json:"id"`
 						Input            *string `json:"input"`
+						Arguments        *string `json:"arguments"`
 						EncryptedContent string  `json:"encrypted_content"`
 						Summary          []struct {
 							Type string `json:"type"`
@@ -708,6 +732,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				if it, ok := items[p.OutputIndex]; ok {
 					switch it.kind {
 					case "function_call", "custom_tool_call":
+						finishFunctionArgs(it, p.Item.Arguments)
 						if it.custom != nil {
 							if delta := it.custom.finish(p.Item.Input); delta != "" {
 								out <- EventToolArgs{ID: it.callID, Delta: delta}
