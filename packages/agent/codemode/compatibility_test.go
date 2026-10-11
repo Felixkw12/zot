@@ -62,22 +62,50 @@ func TestStoreCopiesRollbackDeleteAndReplay(t *testing.T) {
 }
 
 func TestStoreLimits(t *testing.T) {
-	for _, code := range []string{
-		`store("x","x".repeat(262143))`,
-		`for(let i=0;i<5;i++) store(String(i),"x".repeat(262142))`,
-		`store(1,true)`,
-		`store("x",()=>1)`,
-		`const x={}; x.x=x; store("x",x)`,
-	} {
-		res := runScript(t, newAgent(), code, 3000)
-		if !res.IsError || len(res.State) != 0 {
-			t.Fatalf("accepted %s: %+v", code, res)
+	run := func(t *testing.T, code string) core.ToolResult {
+		t.Helper()
+		args, err := json.Marshal(map[string]string{"code": code})
+		if err != nil {
+			t.Fatal(err)
 		}
+		// Storage bounds are not performance requirements. Large JSON copies
+		// in the VM can take longer under race instrumentation and CI load.
+		// Keep a safety deadline without imposing a short script timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return newAgent().CallTool(ctx, "script", "codemode", args, nil)
 	}
-	res := runScript(t, newAgent(), `store("x","x".repeat(262142)); return load("x").length`, 3000)
-	if res.IsError || !strings.Contains(resultText(res), "262142") {
-		t.Fatalf("%+v", res)
+	for _, tc := range []struct {
+		name      string
+		code      string
+		wantError string
+	}{
+		{"value limit", `store("x","x".repeat(262143))`, "more than the limit of 262144"},
+		{"total limit", `for(let i=0;i<5;i++) store(String(i),"x".repeat(262142))`, "store is full"},
+		{"non-string key", `store(1,true)`, "key must be a string"},
+		{"function value", `store("x",()=>1)`, "not JSON-serializable"},
+		{"cyclic value", `const x={}; x.x=x; store("x",x)`, "not JSON-serializable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := run(t, tc.code)
+			if !res.IsError || len(res.State) != 0 || !strings.Contains(resultText(res), tc.wantError) {
+				t.Fatalf("expected %q with no committed state: %+v", tc.wantError, res)
+			}
+		})
 	}
+	t.Run("value at limit", func(t *testing.T) {
+		res := run(t, `store("x","x".repeat(262142)); return load("x").length`)
+		if res.IsError || !strings.Contains(resultText(res), "262142") {
+			t.Fatalf("%+v", res)
+		}
+		var state map[string]string
+		if err := json.Unmarshal(res.State["codemode"], &state); err != nil {
+			t.Fatal(err)
+		}
+		if state["x"] != strings.Repeat("x", 262142) {
+			t.Fatal("value at limit was not committed intact")
+		}
+	})
 }
 
 func TestStructuredErrorResolves(t *testing.T) {
