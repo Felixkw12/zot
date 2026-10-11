@@ -139,6 +139,28 @@ func TestExtPanelDialogWrapsStyledLinePreservingANSI(t *testing.T) {
 	}
 }
 
+func TestExtPanelDialogKeepsIndentOnWrappedEditorLines(t *testing.T) {
+	const input = "  \x1b[97m" + "abcdefghij" + "\x1b[5m█\x1b[25m\x1b[0m"
+	for _, width := range []int{1, 2, 8, 12, 30} {
+		rows := renderExtPanelLine(tui.Theme{}, input, width)
+		assertRowsFitWidth(t, rows, width)
+		var content strings.Builder
+		for _, row := range rows {
+			plain := stripANSIBytes(row)
+			if width > 2 && !strings.HasPrefix(plain, "  ") {
+				t.Errorf("width %d: row lost indentation: %q", width, row)
+			}
+			content.WriteString(strings.TrimLeft(plain, " "))
+			if strings.ContainsAny(plain, "abcdefghij█") && !strings.Contains(row, "\x1b[97m") {
+				t.Errorf("width %d: row lost white styling: %q", width, row)
+			}
+		}
+		if got := content.String(); got != "abcdefghij█" {
+			t.Errorf("width %d: content = %q", width, got)
+		}
+	}
+}
+
 func TestExtPanelDialogKeepsSelectionLikeContent(t *testing.T) {
 	for _, marker := range []string{"▸ ", "● ", "\u200b"} {
 		t.Run(marker, func(t *testing.T) {

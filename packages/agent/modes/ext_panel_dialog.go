@@ -103,6 +103,16 @@ func renderExtPanelLine(th tui.Theme, raw string, width int) []string {
 	case raw != plain:
 		// Extension-provided ANSI: carry active styles into continuation
 		// rows and reset each row so extension styling cannot leak.
+		// Keep an editor's leading margin on every continuation row.
+		content := strings.TrimLeft(raw, " ")
+		indent := len(raw) - len(content)
+		if indent > 0 && width > indent {
+			rows := tui.WrapStyledANSILine(content, width-indent)
+			for i := range rows {
+				rows[i] = raw[:indent] + rows[i]
+			}
+			return rows
+		}
 		return tui.WrapStyledANSILine(raw, width)
 	default:
 		rows := tui.WrapANSILine(plain, width)

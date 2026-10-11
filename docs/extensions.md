@@ -530,7 +530,11 @@ interactive editor or prompt queue.
 
 #### `panel_render` (one-way, while a panel is open)
 
-Pushes a fresh frame for an already-open panel.
+Pushes a fresh frame for an already-open panel. The host wraps lines to the
+available terminal width and preserves ANSI styling across wrapped rows.
+For ANSI-styled lines with leading spaces before the styling, the host repeats
+that indentation on continuation rows when the terminal is wider than the
+indentation.
 
 ```json
 {"type":"panel_render","panel_id":"todos-main",
