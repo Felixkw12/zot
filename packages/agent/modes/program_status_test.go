@@ -84,11 +84,40 @@ func TestInteractiveProgramStatusResults(t *testing.T) {
 	}
 }
 
+type programStatusCompletionWriter struct {
+	out       *bytes.Buffer
+	want      string
+	completed chan struct{}
+}
+
+func (w *programStatusCompletionWriter) Write(p []byte) (int, error) {
+	n, err := w.out.Write(p)
+	if err == nil && string(p) == w.want {
+		select {
+		case w.completed <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
+}
+
 func TestInteractiveProgramStatusPromptLifecycle(t *testing.T) {
 	for _, outcome := range []string{"success", "failure", "cancel"} {
 		t.Run(outcome, func(t *testing.T) {
 			fail := outcome == "failure"
+			want := "done"
+			if fail {
+				want = "error"
+			} else if outcome == "cancel" {
+				want = "idle"
+			}
+			message := ""
+			if fail {
+				message = "request failed"
+			}
+			completion := tui.FormatProgramStatus(tui.ProgramStatusReport{State: want, Message: message})
 			var out bytes.Buffer
+			writer := &programStatusCompletionWriter{out: &out, want: completion, completed: make(chan struct{}, 1)}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			started := make(chan struct{})
@@ -108,7 +137,12 @@ func TestInteractiveProgramStatusPromptLifecycle(t *testing.T) {
 					return nil
 				},
 			})
-			i.programStatus = tui.NewProgramStatus(&out, "1", false)
+			i.programStatus = tui.NewProgramStatus(writer, "1", false)
+			// Discard the initial idle report, which matches cancellation's outcome.
+			select {
+			case <-writer.completed:
+			default:
+			}
 			i.startTurn(ctx, "private prompt")
 			select {
 			case <-started:
@@ -126,20 +160,16 @@ func TestInteractiveProgramStatusPromptLifecycle(t *testing.T) {
 			} else {
 				close(release)
 			}
-			waitAttachedIdle(t, i, fail)
+			// busy clears before session flushing and the final status write.
+			// Wait for that write instead of treating idle as full completion.
+			select {
+			case <-writer.completed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("prompt did not report completion")
+			}
 			i.mu.Lock()
 			defer i.mu.Unlock()
-			want := "done"
-			if fail {
-				want = "error"
-			} else if outcome == "cancel" {
-				want = "idle"
-			}
-			message := ""
-			if fail {
-				message = "request failed"
-			}
-			if !strings.HasSuffix(out.String(), tui.FormatProgramStatus(tui.ProgramStatusReport{State: want, Message: message})) || strings.Contains(out.String(), "private") {
+			if !strings.HasSuffix(out.String(), completion) || strings.Contains(out.String(), "private") {
 				t.Fatalf("completion output = %q", out.String())
 			}
 		})
