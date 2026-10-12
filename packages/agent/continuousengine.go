@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
+	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
+	"github.com/patriceckhart/zot/packages/agent/tools"
 	"github.com/patriceckhart/zot/packages/continuous"
 	"github.com/patriceckhart/zot/packages/core"
 )
@@ -36,17 +39,40 @@ func loadContinuousEngine(ctx context.Context, args Args, rt *continuous.Runtime
 
 // newContinuousEngine captures one immutable host configuration and extension
 // manager. Every build gets its own registry, since tasks build agents in parallel.
-// The CLI host supports one provider. Refuse mismatches rather than sending a
-// conversation's model to the wrong provider with the host's credentials.
+// Inference settings are resolved per conversation, without changing host tools,
+// filesystem permissions, project instructions, or extension generations.
 func newContinuousEngine(resolved Resolved, mgr *extensions.Manager, rt *continuous.Runtime, service func() *continuous.Service) continuous.Engine {
 	return continuous.EngineFunc(func(ctx context.Context, c continuous.Conversation) (*core.Agent, error) {
-		if c.Config.Provider != "" && canonicalProvider(c.Config.Provider) != resolved.Provider {
-			return nil, fmt.Errorf("conversation provider %q does not match host provider %q", c.Config.Provider, resolved.Provider)
+		inference, err := continuousInference(ctx, resolved, c.Config)
+		if err != nil {
+			return nil, err
 		}
 		local := resolved
+		local.Provider, local.Model = inference.Provider, inference.Model
+		local.Credential, local.AuthMethod, local.AccountID = inference.Credential, inference.AuthMethod, inference.AccountID
+		local.BaseURL, local.InsecureTLS = inference.BaseURL, inference.InsecureTLS
+		local.MaxOutput, local.credentialOptional = inference.MaxOutput, inference.credentialOptional
 		local.ToolRegistry = make(core.Registry, len(resolved.ToolRegistry)+2)
 		for name, tool := range resolved.ToolRegistry {
+			if tools.IsOpenRouterServerTool(name) && (local.Provider != "openrouter" || isOpenRouterPresetModel(local.Model)) {
+				continue
+			}
+			if original, ok := tool.(*codemode.Tool); ok {
+				copy := *original
+				copy.Models = newCodemodeModelCaller(local.Provider, local.Credential, local.BaseURL)
+				tool = &copy
+			}
 			local.ToolRegistry[name] = tool
+		}
+		if resolved.openRouterServerTools && local.Provider == "openrouter" && !isOpenRouterPresetModel(local.Model) {
+			local.ToolRegistry = withOpenRouterServerTools(local.ToolRegistry)
+		}
+		if hasOpenRouterServerTools(local.ToolRegistry) != hasOpenRouterServerTools(resolved.ToolRegistry) {
+			local.SystemPrompt = BuildSystemPrompt(SystemPromptOpts{
+				CWD: local.CWD, Tools: toolSummariesFromRegistry(local.ToolRegistry, local.toolDescriptions),
+				Custom: local.systemCustom, CustomSet: local.systemCustomSet, Append: local.systemAppend,
+				ZotDocsDir: filepath.Join(ZotHome(), "docs"),
+			})
 		}
 		ag := local.NewAgent()
 		wireNonInteractiveAgentExtHooks(ctx, ag, mgr)

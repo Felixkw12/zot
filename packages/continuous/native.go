@@ -678,6 +678,9 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 		}}, nil
 	}
 	policy := x.opts.Compaction
+	if x.opts.CompactionFor != nil {
+		policy = x.opts.CompactionFor(c.Config)
+	}
 	// A background summary that finished is published here, at the request
 	// boundary, if its source range is still the active context. A running
 	// one does not block the request.

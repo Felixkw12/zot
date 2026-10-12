@@ -75,10 +75,25 @@ submission, without cancelling the host's work.
 New workspace roots use the host's provider, model, and reasoning defaults.
 The attached TUI forwards only explicitly supplied `--provider`, `--model`,
 and `--reasoning` selections, not its local configuration defaults. Opening
-an existing root does not replace its configuration. The CLI host supports
-one provider at a time and refuses a conversation configured for a different
-provider before making a request. Same-provider model overrides remain
-supported. SDK hosts can implement their own provider routing in `Engine.Build`.
+an existing root does not replace its configuration. The CLI host routes each
+conversation to its configured provider and model, using credentials available
+on the host (stored login, API key, credential command, or configured local
+connection). Use `conversation.configure` to change both fields in the same
+conversation without restarting the host. History and the selection remain in
+the store. Each subsequent model request uses the current selection, an already
+in-flight request finishes with its original client. Owned subagents inherit the
+parent's selection when created, existing children are not changed retroactively.
+Host `--api-key`, `--base-url`, and inference TLS overrides stay scoped to the
+startup provider. Other providers resolve their own connection settings. Unknown
+providers, invalid built-in model IDs, and unavailable credentials are refused,
+not silently substituted. Configured custom/local endpoints retain their
+open-catalog model support. Automatic compaction uses the selected model's
+catalog context window, unknown windows disable automatic compaction.
+
+The browser model picker can list usable models across providers. Clients check
+`capabilities.providers` and request `model.list` with `available: true`. A
+provider switch does not load different extensions or alter host filesystem
+permissions. SDK hosts still control routing through `Engine.Build`.
 
 The attached TUI leaves automatic compaction and context recovery to the host.
 Local `/compact` is unavailable while attached, use the host protocol's
@@ -715,8 +730,19 @@ payloads return `duplicate_key`. `runtime.status` advertises
 `capabilities.attachments: true`, clients must check it before sending new
 attachment fields to an older host. `model.list` (`{provider}`, default the
 host's provider) returns `{provider, models}` from the active catalog, each
-model with `id`, `display_name`, `context_window`, `max_output`, and
-`reasoning`. Hosts that support it advertise `capabilities.models: true`. These fields are additive, text-only
+model with `provider`, `id`, `display_name`, `context_window`, `max_output`, and
+`reasoning`. Hosts that support it advertise `capabilities.models: true`.
+Hosts with an `AvailableModels` callback additionally advertise
+`capabilities.providers: true`. On those hosts, `{available: true}` lists models
+across usable host-side connections and returns an empty top-level `provider`.
+Use the provider on each model row, model IDs are not unique across providers.
+Listing does not execute stored API key commands, command-backed connections
+are checked when selected. Older hosts ignore `available` and retain the default
+provider catalog. `HostServer.ValidateConfig`, when set, validates inference
+selections before `conversation.configure` commits. The CLI host installs both
+callbacks. SDK hosts may leave them unset. `ExecutionOptions.CompactionFor`, when
+set, supplies a per-conversation compaction policy instead of the fixed policy.
+These fields are additive, text-only
 clients and existing stored submissions continue to work. `document.read` and `document.write` need
 a `Documents` registry on the server, otherwise they return `unsupported`.
 

@@ -28,7 +28,7 @@ import (
 //
 //	hello            {token}                           -> {role, version}
 //	runtime.status   {}                                -> Status + blocked run IDs
-//	model.list       {provider}                        -> {provider, models}
+//	model.list       {provider, available}             -> {provider, models}
 //	conversation.create  {workspace, config}           -> Conversation
 //	conversation.list    {after, limit}                -> {conversations, revision, after}
 //	conversation.snapshot {id, limit}                  -> ConversationSnapshot
@@ -95,6 +95,12 @@ type HostServer struct {
 	// DefaultConfig supplies provider, model, and reasoning defaults for new
 	// workspace roots. Owned conversations still inherit their parent config.
 	DefaultConfig AgentConfig
+	// AvailableModels lists models with usable host-side connections. Nil keeps
+	// the legacy single-provider catalog behavior.
+	AvailableModels func(context.Context) ([]HostModel, error)
+	// ValidateConfig checks inference selections before configuration is stored.
+	// Nil leaves validation to the engine at execution time.
+	ValidateConfig func(context.Context, AgentConfig) error
 	// MaxWatches bounds concurrent watches per connection. Zero means 16.
 	MaxWatches int
 	// MaxQueue bounds unclaimed submissions per conversation admitted through
@@ -344,14 +350,23 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"status": status, "blocked_runs": c.server.Host.Blocked(), "metrics": metrics, "version": c.server.Version, "capabilities": map[string]bool{"attachments": true, "models": true}}, nil
+		return map[string]any{"status": status, "blocked_runs": c.server.Host.Blocked(), "metrics": metrics, "version": c.server.Version, "capabilities": map[string]bool{"attachments": true, "models": true, "providers": c.server.AvailableModels != nil}}, nil
 	case "model.list":
 		var p struct {
 			// Provider defaults to the host's default provider.
 			Provider string `json:"provider"`
+			// Available requests models across usable host connections.
+			Available bool `json:"available"`
 		}
 		if err := params(&p); err != nil {
 			return nil, err
+		}
+		if p.Available && c.server.AvailableModels != nil {
+			models, err := c.server.AvailableModels(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"provider": "", "models": models}, nil
 		}
 		if p.Provider == "" {
 			p.Provider = c.server.DefaultConfig.Provider
@@ -491,6 +506,11 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		}
 		if err := params(&p); err != nil {
 			return nil, err
+		}
+		if c.server.ValidateConfig != nil {
+			if err := c.server.ValidateConfig(ctx, p.Config); err != nil {
+				return nil, err
+			}
 		}
 		return r.Configure(ctx, p.ID, p.ExpectedRevision, p.Config)
 	case "conversation.abort":
@@ -1000,6 +1020,7 @@ func EventRow(ev core.AgentEvent) (map[string]any, bool) {
 
 // HostModel is one catalog entry returned by model.list.
 type HostModel struct {
+	Provider      string `json:"provider,omitempty"`
 	ID            string `json:"id"`
 	DisplayName   string `json:"display_name,omitempty"`
 	ContextWindow int    `json:"context_window,omitempty"`
@@ -1014,7 +1035,7 @@ func hostModels(providerID string) []HostModel {
 		return out
 	}
 	for _, m := range provider.ModelsForProvider(providerID) {
-		out = append(out, HostModel{ID: m.ID, DisplayName: m.DisplayName, ContextWindow: m.ContextWindow, MaxOutput: m.MaxOutput, Reasoning: m.Reasoning})
+		out = append(out, HostModel{Provider: providerID, ID: m.ID, DisplayName: m.DisplayName, ContextWindow: m.ContextWindow, MaxOutput: m.MaxOutput, Reasoning: m.Reasoning})
 	}
 	return out
 }

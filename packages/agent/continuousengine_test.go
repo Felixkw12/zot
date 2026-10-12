@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/continuous"
 	"github.com/patriceckhart/zot/packages/core"
 )
@@ -51,16 +52,56 @@ func TestContinuousEngineIsolatesRegistries(t *testing.T) {
 	}
 }
 
-func TestContinuousEngineRejectsProviderMismatch(t *testing.T) {
-	r := Resolved{Provider: "openai", Credential: "synthetic-key", Model: "gpt-4o-mini"}
+func TestContinuousEngineRoutesProviders(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("ANTHROPIC_API_KEY", "synthetic-anthropic-key")
+	t.Setenv("ANTHROPIC_OAUTH_TOKEN", "")
+	r := Resolved{Provider: "openai", Credential: "synthetic-key", Model: "gpt-4o-mini", SystemPrompt: "host instructions"}
 	engine := newContinuousEngine(r, nil, nil, func() *continuous.Service { return nil })
 	for _, name := range []string{"", "openai", "OpenAI"} {
 		if _, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: name}}); err != nil {
 			t.Fatalf("provider %q: %v", name, err)
 		}
 	}
-	if _, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: "anthropic", Model: "claude-test"}}); err == nil || !strings.Contains(err.Error(), "does not match host provider") {
-		t.Fatalf("mismatched provider accepted: %v", err)
+	ag, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: "anthropic", Model: "claude-sonnet-4-5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag.Client.Name() != "anthropic" || ag.Model != "claude-sonnet-4-5" || ag.System != r.SystemPrompt || ag.MaxTokens == 0 {
+		t.Fatalf("incorrect routed agent: client=%s model=%s max=%d", ag.Client.Name(), ag.Model, ag.MaxTokens)
+	}
+	if _, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: "anthropic", Model: "claude-test"}}); err == nil || !strings.Contains(err.Error(), "unknown model") {
+		t.Fatalf("invalid model accepted: %v", err)
+	}
+}
+
+func TestContinuousEngineKeepsProviderToolsIsolated(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "synthetic-openrouter")
+	original := &codemode.Tool{Mode: "raw"}
+	host := Resolved{Provider: "openai", Model: "gpt-4o-mini", Credential: "synthetic-host", ToolRegistry: core.Registry{"codemode": original}, openRouterServerTools: true}
+	engine := newContinuousEngine(host, nil, nil, func() *continuous.Service { return nil })
+	remote, err := engine.Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := engine.Build(context.Background(), continuous.Conversation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasOpenRouterServerTools(remote.Tools) || hasOpenRouterServerTools(local.Tools) || hasOpenRouterServerTools(host.ToolRegistry) {
+		t.Fatal("provider-specific server tools leaked between conversations")
+	}
+	if remote.Tools["codemode"] == original || local.Tools["codemode"] == original || remote.Tools["codemode"] == local.Tools["codemode"] {
+		t.Fatal("codemode inference callers are shared between builds")
+	}
+	host.openRouterServerTools = false
+	disabled, err := newContinuousEngine(host, nil, nil, func() *continuous.Service { return nil }).Build(context.Background(), continuous.Conversation{Config: continuous.AgentConfig{Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasOpenRouterServerTools(disabled.Tools) {
+		t.Fatal("provider switching enabled unrequested server tools")
 	}
 }
 

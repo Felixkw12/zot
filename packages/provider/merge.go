@@ -1,5 +1,24 @@
 package provider
 
+// appendCatalog adds supplements without duplicating provider/model identities.
+// Existing entries win, matching FindModel's first-match lookup and preserving
+// curated metadata when a bulk catalog also includes the same model.
+func appendCatalog(base, extra []Model) []Model {
+	out := make([]Model, 0, len(base)+len(extra))
+	seen := make(map[[2]string]bool, len(base)+len(extra))
+	for _, group := range [][]Model{base, extra} {
+		for _, model := range group {
+			key := [2]string{model.Provider, model.ID}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
 // MergeCatalog returns the baked-in catalog overlaid with live entries.
 // Precedence per id: live > catalog; speculative entries are promoted
 // to non-speculative when a matching live id appears.

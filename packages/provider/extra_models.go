@@ -11,7 +11,7 @@ package provider
 //     because the `kimi` provider lives in models.go alongside the
 //     other curated providers.
 
-func init() { Catalog = append(Catalog, supplementCatalog...) }
+func init() { Catalog = appendCatalog(Catalog, supplementCatalog) }
 
 var supplementCatalog = []Model{
 	// ----- kimi (anthropic-messages on api.kimi.com/coding) -----

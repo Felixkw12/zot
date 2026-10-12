@@ -319,7 +319,7 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 		return host.Service()
 	}
 	engine := newContinuousEngine(r, extMgr, rt, service)
-	host, err = continuous.NewHost(rt, engine, continuous.HostOptions{Execution: continuous.ExecutionOptions{MaxTurns: opts.maxTurns, Compaction: continuousCompaction(r)}, Policy: opts.policy})
+	host, err = continuous.NewHost(rt, engine, continuous.HostOptions{Execution: continuous.ExecutionOptions{MaxTurns: opts.maxTurns, Compaction: continuousCompaction(r), CompactionFor: continuousCompactionFor(r)}, Policy: opts.policy})
 	if err != nil {
 		return err
 	}
@@ -383,7 +383,14 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 		return fmt.Errorf("build search index: %w", err)
 	}
 	server := &continuous.HostServer{Host: host, Engine: engine, Tokens: tokens, Version: "continuous", Reload: reload, SearchIndex: index,
-		DefaultConfig: continuous.AgentConfig{Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning}}
+		DefaultConfig: continuous.AgentConfig{Provider: r.Provider, Model: r.Model, Reasoning: r.Reasoning},
+		AvailableModels: func(ctx context.Context) ([]continuous.HostModel, error) {
+			return continuousAvailableModels(ctx, r)
+		},
+		ValidateConfig: func(ctx context.Context, config continuous.AgentConfig) error {
+			_, err := continuousInference(ctx, r, config)
+			return err
+		}}
 	plan, err := rt.RecoveryPreview(ctx)
 	if err != nil {
 		ln.Close()

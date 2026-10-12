@@ -43,6 +43,9 @@ type ExecutionOptions struct {
 	Sink func(core.AgentEvent)
 	// Compaction enables automatic context compaction. Zero disables it.
 	Compaction CompactionPolicy
+	// CompactionFor overrides Compaction for each conversation's configuration.
+	// It lets multi-model hosts respect the selected model's context window.
+	CompactionFor func(AgentConfig) CompactionPolicy
 	// Approver, when set, can require a persisted human decision before a
 	// tool call's intent commits. Nil never asks.
 	Approver Approver

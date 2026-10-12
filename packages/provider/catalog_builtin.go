@@ -18,7 +18,7 @@ func init() {
 			configureCopilotModel(&builtinCatalog[i])
 		}
 	}
-	Catalog = append(Catalog, builtinCatalog...)
+	Catalog = appendCatalog(Catalog, builtinCatalog)
 }
 
 var builtinCatalog = []Model{

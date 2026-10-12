@@ -67,11 +67,12 @@ type Resolved struct {
 	// Bookkeeping for MergeExtensionTools. Captured at Resolve time
 	// so the system prompt can be rebuilt later without re-running
 	// resolve.
-	credentialOptional bool
-	systemAppend       []string
-	systemCustom       string
-	systemCustomSet    bool
-	toolDescriptions   map[string]string
+	credentialOptional    bool
+	openRouterServerTools bool
+	systemAppend          []string
+	systemCustom          string
+	systemCustomSet       bool
+	toolDescriptions      map[string]string
 }
 
 // HasCredential reports whether the resolved configuration can create a client.
@@ -326,6 +327,12 @@ func canonicalProvider(name string) string {
 // login flow. requireCred controls whether missing credentials are a
 // hard error (used by print/json modes).
 func Resolve(args Args, requireCred bool) (Resolved, error) {
+	return resolve(context.Background(), args, requireCred, false)
+}
+
+// resolve can stop after inference configuration, without rebuilding tools or
+// reading project context. Continuous conversations use that path when routing.
+func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (Resolved, error) {
 	if err := args.CodemodeSettings.Validate(); err != nil {
 		return Resolved{}, err
 	}
@@ -387,12 +394,12 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		cred = firstNonEmpty(args.APIKey, "ollama")
 		method = "apikey"
 	} else {
-		cred, method, accountID, credErr = ResolveCredentialFull(provName, args.APIKey)
+		cred, method, accountID, credErr = ResolveCredentialFullContext(ctx, provName, args.APIKey)
 	}
 
 	// Persist --api-key for custom providers so subsequent runs don't
 	// need to pass it again.
-	if !isBuiltinProvider(provName) && !keylessCustom && args.APIKey != "" {
+	if !inferenceOnly && !isBuiltinProvider(provName) && !keylessCustom && args.APIKey != "" {
 		if store := AuthStoreFor(); store != nil {
 			_ = store.SetAPIKey(provName, args.APIKey)
 		}
@@ -462,13 +469,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 	if provName == provider.LMStudioProviderID && LMStudioConfigured() {
 		// Restore transient metadata when resuming a local model after restart.
-		_ = RefreshLMStudioModels(context.Background())
+		_ = RefreshLMStudioModels(ctx)
 	}
 	if isDiscoverableCustomProvider(provName) {
 		if _, err := provider.FindModel(provName, model); err != nil {
 			// Same restore for discovery-enabled custom providers. Skipped
 			// when the model is already known to avoid a probe per launch.
-			_ = RefreshCustomProviderModels(context.Background())
+			_ = RefreshCustomProviderModels(ctx)
 		}
 	}
 	resolvedModel, err := provider.FindModel(provName, model)
@@ -582,7 +589,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		args.BaseURL = "http://localhost:11434"
 	}
 	if args.BaseURL == "" && provName == provider.LMStudioProviderID {
-		root, _, configErr := resolveLMStudioConfig(context.Background(), apiKeyCommandExecute)
+		root, _, configErr := resolveLMStudioConfig(ctx, apiKeyCommandExecute)
 		if configErr != nil {
 			return Resolved{}, configErr
 		}
@@ -592,7 +599,7 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 		args.BaseURL = root + "/v1"
 	}
 	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
-		managementURL, _, configErr := ResolveLlamaCPPConfig()
+		managementURL, _, configErr := resolveLlamaCPPConfig(ctx, apiKeyCommandExecute)
 		if configErr != nil {
 			return Resolved{}, configErr
 		}
@@ -607,6 +614,13 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	// Built-in provider base URLs, auth calls, and model discovery keep normal
 	// certificate verification even when --insecure is present.
 	insecureTLS := (args.InsecureTLS || cfg.Insecure) && explicitBaseURL
+
+	// Routed built-in providers require their own credentials even if their
+	// catalog entry has a base URL. Never synthesize a local placeholder for a
+	// remote connection selected by a continuous conversation.
+	if inferenceOnly && credErr != nil && ((isBuiltinProvider(provName) && provName != "ollama") || CredentialAvailable(provName)) {
+		return Resolved{}, credErr
+	}
 
 	// If the model has a base URL, credentials are optional (local
 	// models like ollama don't need real API keys).
@@ -637,6 +651,14 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	if credErr != nil && requireCred {
 		return Resolved{}, fmt.Errorf("%w; set %s_API_KEY, pass --api-key, or run `zot` and /login",
 			credErr, envVarName(provName))
+	}
+
+	if inferenceOnly {
+		return Resolved{
+			Provider: provName, Model: model, Credential: cred, AuthMethod: method,
+			AccountID: accountID, BaseURL: args.BaseURL, InsecureTLS: insecureTLS,
+			MaxOutput: resolvedModel.MaxOutput, credentialOptional: credentialOptional,
+		}, nil
 	}
 
 	sandbox := tools.NewSandbox(args.CWD)
@@ -744,30 +766,31 @@ func Resolve(args Args, requireCred bool) (Resolved, error) {
 	}
 
 	return Resolved{
-		Provider:           provName,
-		Model:              model,
-		Credential:         cred,
-		AuthMethod:         method,
-		AccountID:          accountID,
-		BaseURL:            args.BaseURL,
-		InsecureTLS:        insecureTLS,
-		CWD:                args.CWD,
-		Reasoning:          reasoning,
-		Temperature:        temperature,
-		ToolRegistry:       reg,
-		ToolSummary:        summaries,
-		SystemPrompt:       sys,
-		MaxSteps:           max,
-		MaxOutput:          resolvedModel.MaxOutput,
-		Sandbox:            sandbox,
-		SkillTool:          skillTool,
-		SkillDiagnostics:   skillDiagnostics,
-		ContextFiles:       contextFiles,
-		credentialOptional: credentialOptional,
-		systemAppend:       append_,
-		systemCustom:       custom,
-		systemCustomSet:    customSet,
-		toolDescriptions:   descMapFromSummaries(summaries),
+		Provider:              provName,
+		Model:                 model,
+		Credential:            cred,
+		AuthMethod:            method,
+		AccountID:             accountID,
+		BaseURL:               args.BaseURL,
+		InsecureTLS:           insecureTLS,
+		CWD:                   args.CWD,
+		Reasoning:             reasoning,
+		Temperature:           temperature,
+		ToolRegistry:          reg,
+		ToolSummary:           summaries,
+		SystemPrompt:          sys,
+		MaxSteps:              max,
+		MaxOutput:             resolvedModel.MaxOutput,
+		Sandbox:               sandbox,
+		SkillTool:             skillTool,
+		SkillDiagnostics:      skillDiagnostics,
+		ContextFiles:          contextFiles,
+		credentialOptional:    credentialOptional,
+		openRouterServerTools: !args.NoTools && OpenRouterServerToolsEnabled(),
+		systemAppend:          append_,
+		systemCustom:          custom,
+		systemCustomSet:       customSet,
+		toolDescriptions:      descMapFromSummaries(summaries),
 	}, nil
 }
 

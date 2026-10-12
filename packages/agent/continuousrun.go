@@ -207,7 +207,7 @@ func runContinuousRun(ctx context.Context, args []string, out io.Writer) (retErr
 			fmt.Fprintf(os.Stderr, "tool %s %s\n", e.Name, e.Status)
 		}
 	}
-	svc, err = continuous.NewService(rt, engine, continuous.ExecutionOptions{MaxTurns: opts.maxTurns, Sink: sink, Compaction: continuousCompaction(r)})
+	svc, err = continuous.NewService(rt, engine, continuous.ExecutionOptions{MaxTurns: opts.maxTurns, Sink: sink, Compaction: continuousCompaction(r), CompactionFor: continuousCompactionFor(r)})
 	if err != nil {
 		return err
 	}
@@ -313,6 +313,21 @@ func continuousEventRow(ev core.AgentEvent) (any, bool) {
 		}{"turn_end", string(e.Stop), errString(e.Err)}, true
 	}
 	return nil, false
+}
+
+// continuousCompactionFor follows each conversation's selected model.
+func continuousCompactionFor(host Resolved) func(continuous.AgentConfig) continuous.CompactionPolicy {
+	return func(config continuous.AgentConfig) continuous.CompactionPolicy {
+		name := firstNonEmpty(canonicalProvider(config.Provider), host.Provider)
+		model := config.Model
+		if model == "" {
+			model = host.Model
+			if name != host.Provider {
+				model = defaultModelForProvider(name)
+			}
+		}
+		return continuousCompaction(Resolved{Provider: name, Model: model})
+	}
 }
 
 // continuousCompaction derives the automatic compaction policy from the
