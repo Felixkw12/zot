@@ -106,8 +106,9 @@ func (tc TaskContext) StartEffect(ctx context.Context, checkpoint any, build fun
 }
 
 // Commit writes task-scoped records from inside a handler without settling
-// the phase, for example bounded progress. It is fenced like StartEffect but
-// is allowed while abort is requested.
+// the phase, for example bounded progress or owned child creation. It is
+// fenced like StartEffect. Progress is allowed while abort is requested,
+// but creating new children is refused.
 func (tc TaskContext) Commit(ctx context.Context, build func(tx *TaskTx) error) error {
 	return tc.commitScoped(ctx, "task.progress", func(tx *TaskTx, t *Task) error { return build(tx) })
 }
@@ -145,8 +146,8 @@ func (tc TaskContext) commitScoped(ctx context.Context, actor string, build func
 		if err := build(tx, &t); err != nil {
 			return err
 		}
-		if len(tx.created) > 0 {
-			return fmt.Errorf("children must be created in the phase's final commit")
+		if len(tx.created) > 0 && t.AbortRequested {
+			return ErrTaskAborting
 		}
 		t.Revision = snap.Revision() + 1
 		err = inv.s.r.commit(ctx, snap, actor, append(tx.ops, record(taskKey(t.ID), t))...)

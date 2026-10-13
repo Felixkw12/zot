@@ -846,7 +846,9 @@ through the `TaskTx`. It is fenced on the task's current invocation
 requested, so no effect starts after a committed abort. The next applied
 `Next` clears `Effect`. A reservation alone never sets it: after a crash,
 `TaskContext.Interrupted` is true only when an effect may have started.
-`tc.Commit` writes task-scoped records without the effect marker.
+`tc.Commit` writes task-scoped records without the effect marker. It may
+create owned children while the phase runs, with the same invocation fencing.
+Child creation is refused with `ErrTaskAborting` once abort was requested.
 
 `Next.Commit` builds the final `Next` inside the transaction that applies it,
 against the fenced snapshot. `TaskTx.CreateChild` creates an owned task whose
@@ -1322,19 +1324,55 @@ agent, not the most recently built agent. A continuous `call_tool` without a
 live, resolvable parent is refused, including calls from slash commands.
 Behavior outside continuous mode is unchanged.
 
-Each nested call receives its own `ToolCallIdentity` and operation key. IDs
-use the parent's ID plus a per-invocation ordinal, shared by runtime and
-extension calls. Keys are stable on replay when nested calls occur in the
-same order. Concurrent or reordered nested calls do not have stable operation
-assignment. No explicit nested keys are supported yet.
+Each nested call is an owned `zot.tool` task with its own intent, committed
+result, replay policy, approval and `ToolCallIdentity`. Its call ID is
+`<parentCallID>/n/<key>`. Runtime and extension calls share an ordinal sequence
+within each parent invocation. Ordinals are stable only when calls occur in
+the same order. A replay-safe parent issuing concurrent or reordered calls
+must use explicit keys, through `core.WithNestedToolKey(ctx, "step-1")` or
+extension `call_tool.key`. Keys must be nonempty, at most 128 bytes, and contain
+neither `/` nor NUL. Reusing a key with a different tool or normalized JSON
+arguments returns a blocked result and executes nothing.
 
-Nested calls are not durable child tasks and do not consult the continuous
-`Approver`. They have no independent intent, committed result or recovery
-policy. Replaying a parent can repeat a completed nested effect, even when
-that nested tool declares `never`. Do not treat distinct operation keys as
-exactly-once execution without receiver-enforced deduplication. Extension
-`call_tool` retains its 60-second deadline. Recursion and depth limits still
-apply.
+A completed child returns its committed result on parent replay, without
+re-execution. The same bounded result is committed and returned to callers,
+with a 256 KiB serialized limit. Oversized text is truncated, images may be
+removed, and oversized auxiliary data yields an error result. Nested results
+carry data only: control signals (`handoff`, terminate, tool activation) apply
+only to model-issued calls. A nested `handoff` returns its result text to the
+caller and does not reset the context or admit a continuation. Children do not
+write model-visible transcript entries or search records. Parent result
+metadata comes from committed child outcomes. Live task views preserve owner
+edges, committed child progress appears in the parent's tool panel, and child
+usage is attributed to its own task and tool.
+
+| Parent recovery | Nested children |
+|---|---|
+| Re-executes after fresh authorization | Terminal children are reused. Interrupted children follow their own stored policy: `never` reports interruption, `safe` reruns, `idempotent` reruns with the child's key, and `reconcile` asks the receiver with that key. |
+| Is not re-executed | Live children are aborted bottom-up before the parent result is published. Started child effects receive their own recovery notices. |
+
+Recovery previews include a hierarchical `nested` list. A stored replay policy
+is never widened. Aborting a parent aborts live descendants first and does not
+rewrite a child's committed result. Children omitted by a replay are settled
+before the parent's result is published. Executable callbacks are not stored,
+so normal nested execution resumes only when a live parent supplies the
+operation again. Distinct operation keys do not guarantee exactly-once effects
+without receiver-enforced deduplication.
+
+Approvals are durable and block the parent without changing its phase. Status
+identifies the child and its parent tool. A parent that can replay finds the
+same approval after restart. When every ancestor of the waiting call replays
+with `safe` or `idempotent`, `Service.Step` releases the parents and returns
+`ErrAwaitingApproval`, as for a top-level call. The decision resumes the run
+and the parent's replay reattaches to the same child. A parent with policy
+`never` or `reconcile` cannot be released without losing its effect, so `Step`
+keeps waiting for the decision or the caller's cancellation. Extension approval and dependency waits have no
+implicit 60-second deadline. The deadline applies to execution only, while
+caller cancellation and disconnect still propagate. Waiting parents remain
+joined and fenced but release scheduler capacity needed by owned work.
+Recursion remains limited to four calls including the original, cycles are
+refused, and nested calls cannot be background work. Ordinary modes and older
+extensions retain their existing behavior.
 
 ## Remaining work and release gates
 

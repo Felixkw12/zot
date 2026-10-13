@@ -856,6 +856,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 	if err != nil {
 		return Integrity{}, err
 	}
+	if err := checkNestedIntegrity(snap, bad); err != nil {
+		return Integrity{}, err
+	}
 	report.Valid = true
 	return report, nil
 }

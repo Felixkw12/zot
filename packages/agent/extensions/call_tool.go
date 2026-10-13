@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/patriceckhart/zot/packages/agent/extproto"
+	"github.com/patriceckhart/zot/packages/core"
 )
 
 // TrackToolCall records the initiator for confirmation and interception
@@ -43,6 +44,10 @@ type outboundCall struct {
 
 const maxToolCallDepth = 4
 
+// EnableDurableToolCalls must be set before loading continuous extensions.
+// It advertises durable keys and leaves approval waits outside execution timeouts.
+func (m *Manager) EnableDurableToolCalls() { m.durableToolCalls.Store(true) }
+
 // SetToolCaller binds host-managed execution to the current agent mode.
 // The callback must enforce the same policy as ordinary model tool calls.
 func (m *Manager) SetToolCaller(fn func(context.Context, string, string, json.RawMessage) extproto.ToolResultFromHost) {
@@ -70,6 +75,8 @@ func (m *Manager) handleCallTool(ctx context.Context, ext *Extension, req extpro
 	switch {
 	case !ext.callTool:
 		fail("extension did not opt in to call_tool")
+	case m.durableToolCalls.Load() && (req.ParentID == "" || !parentFound):
+		fail("continuous call_tool requires a live parent_id")
 	case req.ParentID != "" && !parentFound:
 		fail("unknown or expired parent tool call")
 	case req.ParentID == "" && activeOutbound:
@@ -84,6 +91,9 @@ func (m *Manager) handleCallTool(ctx context.Context, ext *Extension, req extpro
 		fail("call_tool requires a name and JSON object args")
 	default:
 		ctx = context.WithValue(ctx, toolChainKey{}, append(append([]string(nil), chain...), req.Name))
+		if m.durableToolCalls.Load() {
+			ctx = core.WithNestedToolKey(ctx, req.Key)
+		}
 		result = caller(ctx, ext.Manifest.Name, req.Name, req.Args)
 		result.Type, result.ID, result.Name = "tool_result", req.ID, req.Name
 	}

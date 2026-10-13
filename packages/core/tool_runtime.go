@@ -143,7 +143,19 @@ func (a *Agent) withToolRuntime(ctx context.Context, tc provider.ToolCallBlock, 
 		}
 		callCtx = context.WithValue(callCtx, toolChainKey{}, chain)
 		callCtx = context.WithValue(callCtx, toolRuntimeKey{}, runtime)
-		id := fmt.Sprintf("%s/%d", tc.ID, seq.Add(1))
+		ordinal := seq.Add(1)
+		id := fmt.Sprintf("%s/%d", tc.ID, ordinal)
+		if a.NestedToolExecutor != nil {
+			key := NestedToolKey(callCtx)
+			if key == "" {
+				key = fmt.Sprint(ordinal)
+			}
+			if strings.ContainsAny(key, "/\x00") || len(key) > 128 {
+				return ToolResult{IsError: true, Status: "blocked", Content: []provider.Content{provider.TextBlock{Text: "invalid nested tool key"}}}
+			}
+			id = tc.ID + "/n/" + key
+			callCtx = WithNestedToolKey(callCtx, "")
+		}
 		emit := func(ev AgentEvent) {
 			eventMu.Lock()
 			defer eventMu.Unlock()
@@ -160,14 +172,17 @@ func (a *Agent) withToolRuntime(ctx context.Context, tc provider.ToolCallBlock, 
 		if a.NestedToolExecutor == nil {
 			return a.runTool(callCtx, call, emit, tool)
 		}
-		ran := false
+		executed := false
 		result := a.NestedToolExecutor(callCtx, tc, call, tool, func(ctx context.Context, effective provider.ToolCallBlock) ToolResult {
-			ran = true
-			return a.runTool(ctx, effective, emit, tool)
+			return a.runTool(ctx, effective, func(ev AgentEvent) {
+				if result, ok := ev.(EvToolResult); ok && result.ID == id {
+					executed = result.Executed
+					return
+				}
+				emit(ev)
+			}, tool)
 		})
-		if !ran {
-			emit(EvToolResult{ID: id, Name: name, Args: args, Status: result.Status, Result: result})
-		}
+		emit(EvToolResult{ID: id, Name: name, Args: args, Status: result.Status, Executed: executed, Result: result})
 		return result
 	}
 	runtime.call = func(ctx context.Context, name string, args json.RawMessage, observer func(AgentEvent)) ToolResult {

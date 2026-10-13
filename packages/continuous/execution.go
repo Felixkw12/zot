@@ -496,6 +496,14 @@ func executeCall(ctx context.Context, agent *core.Agent, identity ToolCallIdenti
 	defer func() { agent.BeforeToolExecute, agent.BeforeToolExecuteContext = before, beforeCtx }()
 	ctx = context.WithValue(ctx, toolCallKey{}, identity)
 	ctx = core.WithToolOperationKey(ctx, identity.OperationKey())
+	if binding, ok := ctx.Value(nestedBindingKey{}).(*nestedBinding); ok && binding.callID == call.ID {
+		if timeout := core.NestedToolTimeout(ctx); timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+		return binding.execute(core.WithToolProgressObserver(ctx, sink), call)
+	}
 	return agent.CallTool(ctx, call.ID, call.Name, call.Arguments, func(ev core.AgentEvent) {
 		switch ev.(type) {
 		case core.EvToolResult, core.EvToolCall:

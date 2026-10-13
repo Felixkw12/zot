@@ -17,11 +17,12 @@ import (
 // derived from committed state alone and performs no work. Policies of tools
 // are reported as stored; the live registry may still deny a replay later.
 type RecoveryAction struct {
-	ConversationID string `json:"conversation_id"`
-	RunID          string `json:"run_id"`
-	Phase          string `json:"phase"`
-	Turn           int    `json:"turn"`
-	Attempt        int    `json:"attempt"`
+	Nested         []NestedRecovery `json:"nested,omitempty"`
+	ConversationID string           `json:"conversation_id"`
+	RunID          string           `json:"run_id"`
+	Phase          string           `json:"phase"`
+	Turn           int              `json:"turn"`
+	Attempt        int              `json:"attempt"`
 	// Action is resend, continue, replay, reconcile, report, approve, or abort.
 	Action string `json:"action"`
 	// Detail explains the decision in user language.

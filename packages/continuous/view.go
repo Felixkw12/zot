@@ -199,11 +199,15 @@ type AgentEvent struct {
 	// Partial is the streamed text of message_start and message_update.
 	Partial *Partial `json:"partial,omitempty"`
 	// Tool events name the call and carry its progress or result status.
-	CallID   string          `json:"call_id,omitempty"`
-	Tool     string          `json:"tool,omitempty"`
-	Args     json.RawMessage `json:"args,omitempty"`
-	Progress string          `json:"progress,omitempty"`
-	Status   string          `json:"status,omitempty"`
+	CallID       string          `json:"call_id,omitempty"`
+	Tool         string          `json:"tool,omitempty"`
+	Args         json.RawMessage `json:"args,omitempty"`
+	Progress     string          `json:"progress,omitempty"`
+	Status       string          `json:"status,omitempty"`
+	ParentTask   string          `json:"parent_task,omitempty"`
+	ParentCallID string          `json:"parent_call_id,omitempty"`
+	NestedKey    string          `json:"nested_key,omitempty"`
+	Depth        int             `json:"depth,omitempty"`
 	// Task is the task of tool and compaction events.
 	Task string `json:"task,omitempty"`
 }
@@ -313,13 +317,13 @@ func (d *eventDeriver) derive(cm storage.Commit) []AgentEvent {
 					d.running[t.ID] = true
 					var cp toolCheckpoint
 					_ = json.Unmarshal(t.Checkpoint, &cp)
-					ev(AgentEvent{Type: "tool_execution_start", Task: t.ID, CallID: in.CallID, Tool: in.Name, Args: cp.Args})
+					ev(AgentEvent{Type: "tool_execution_start", Task: t.ID, CallID: in.CallID, Tool: in.Name, Args: cp.Args, ParentTask: in.ParentTask, NestedKey: in.NestedKey, Depth: in.Depth})
 				}
 				if t.State == "terminal" {
 					var res toolOutcome
 					_ = json.Unmarshal(t.Result, &res)
 					delete(d.running, t.ID)
-					ev(AgentEvent{Type: "tool_execution_end", Task: t.ID, CallID: in.CallID, Tool: in.Name, Status: firstNonEmpty(res.Status, t.Outcome)})
+					ev(AgentEvent{Type: "tool_execution_end", Task: t.ID, CallID: in.CallID, Tool: in.Name, Status: firstNonEmpty(res.Status, t.Outcome), ParentTask: in.ParentTask, NestedKey: in.NestedKey, Depth: in.Depth})
 				}
 			case TaskKindCompaction:
 				if t.State != "terminal" && !d.compact[t.ID] {
@@ -332,7 +336,7 @@ func (d *eventDeriver) derive(cm storage.Commit) []AgentEvent {
 			if op.Delete || json.Unmarshal(op.Value, &p) != nil || !d.running[p.TaskID] {
 				continue
 			}
-			ev(AgentEvent{Type: "tool_execution_update", Task: p.TaskID, CallID: p.CallID, Progress: p.Text})
+			ev(AgentEvent{Type: "tool_execution_update", Task: p.TaskID, CallID: p.CallID, Progress: p.Text, ParentCallID: p.ParentCallID})
 		case strings.HasPrefix(op.Key, "entry/"+d.id+"/"):
 			var e Entry
 			if op.Delete || json.Unmarshal(op.Value, &e) != nil {

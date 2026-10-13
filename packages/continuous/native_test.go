@@ -434,6 +434,12 @@ func TestTaskStartEffectFencing(t *testing.T) {
 	if err := old.StartEffect(ctx, nil, nil); !errors.Is(err, ErrStaleInvocation) {
 		t.Fatalf("stale invocation committed: %v", err)
 	}
+	if err := old.Commit(ctx, func(tx *TaskTx) error {
+		_, err := tx.CreateChild(TaskSpec{Kind: "effect"})
+		return err
+	}); !errors.Is(err, ErrStaleInvocation) {
+		t.Fatalf("stale invocation created a child: %v", err)
+	}
 }
 
 func TestTaskStartEffectRefusedAfterAbort(t *testing.T) {
@@ -450,6 +456,12 @@ func TestTaskStartEffectRefusedAfterAbort(t *testing.T) {
 			"go": func(ctx context.Context, tc TaskContext) (Next, error) {
 				if err := r.AbortTask(ctx, id, false); err != nil {
 					return Next{}, err
+				}
+				if err := tc.Commit(ctx, func(tx *TaskTx) error {
+					_, err := tx.CreateChild(TaskSpec{Kind: "effect"})
+					return err
+				}); !errors.Is(err, ErrTaskAborting) {
+					t.Errorf("child created after abort: %v", err)
 				}
 				if err := tc.StartEffect(ctx, nil, nil); err != nil {
 					return Next{}, err

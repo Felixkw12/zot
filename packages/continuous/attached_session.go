@@ -193,7 +193,7 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 				prev := progress[p.CallID]
 				progress[p.CallID] = p.Text
 				if delta := strings.TrimPrefix(p.Text, prev); delta != "" {
-					sink(core.EvToolProgress{ID: p.CallID, Text: delta})
+					sink(projectToolProgress(p, delta))
 				}
 			}
 			run, settled := RunFromCommit(cm, s.driver.ConversationID)

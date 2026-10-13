@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/continuous/storage"
+	"github.com/patriceckhart/zot/packages/core"
 )
 
 // waitState tracks why a followed submission is not producing output, from
@@ -23,7 +24,7 @@ type waitState struct {
 func newWaitState(sub Submission, snap ConversationSnapshot) *waitState {
 	ws := &waitState{submission: sub.ID, state: sub.State, approvals: map[string]string{}}
 	for _, a := range snap.Approvals {
-		ws.approvals[a.ID] = a.Tool
+		ws.approvals[a.ID] = approvalLabel(a)
 	}
 	if r := snap.Recovery; r != nil && !r.Automatic && r.Action != "approve" {
 		ws.recovery = r.Action
@@ -47,7 +48,7 @@ func (ws *waitState) apply(cm storage.Commit, conversationID string) bool {
 				continue
 			}
 			if a.State == approvalPending {
-				ws.approvals[a.ID] = a.Tool
+				ws.approvals[a.ID] = approvalLabel(a)
 			} else {
 				delete(ws.approvals, a.ID)
 			}
@@ -112,4 +113,18 @@ func ToolProgressFromCommit(cm storage.Commit, conversationID string) []ToolProg
 		}
 	}
 	return out
+}
+
+func approvalLabel(a Approval) string {
+	if a.ParentTool != "" {
+		return a.Tool + " (nested in " + a.ParentTool + ")"
+	}
+	return a.Tool
+}
+
+func projectToolProgress(p ToolProgress, delta string) core.EvToolProgress {
+	if p.ParentCallID != "" {
+		return core.EvToolProgress{ID: p.ParentCallID, Text: "[" + p.CallID + "] " + delta}
+	}
+	return core.EvToolProgress{ID: p.CallID, Text: delta}
 }

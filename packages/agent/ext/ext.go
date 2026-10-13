@@ -328,19 +328,20 @@ type Extension struct {
 	stderr  io.Writer
 	writeMu sync.Mutex
 
-	mu            sync.Mutex
-	commands      map[string]CommandHandler
-	descriptions  []descTuple // ordered so register frames arrive in registration order
-	tools         map[string]InteractiveToolHandler
-	toolCancels   map[string]context.CancelFunc
-	reconcilers   map[string]ReconcileHandler
-	pendingCalls  map[string]chan extproto.ToolResultFromHost
-	callSeq       atomic.Uint64
-	callToolReady atomic.Bool
-	done          chan struct{}
-	toolDefs      []toolDef // ordered so register frames arrive in registration order
-	eventHandlers map[string]EventHandler
-	eventNames    []string // declared subscription order
+	mu              sync.Mutex
+	commands        map[string]CommandHandler
+	descriptions    []descTuple // ordered so register frames arrive in registration order
+	tools           map[string]InteractiveToolHandler
+	toolCancels     map[string]context.CancelFunc
+	reconcilers     map[string]ReconcileHandler
+	pendingCalls    map[string]chan extproto.ToolResultFromHost
+	callSeq         atomic.Uint64
+	callToolReady   atomic.Bool
+	callToolDurable atomic.Bool
+	done            chan struct{}
+	toolDefs        []toolDef // ordered so register frames arrive in registration order
+	eventHandlers   map[string]EventHandler
+	eventNames      []string // declared subscription order
 
 	interceptTool      InterceptHandler
 	interceptToolRich  ToolCallHandler
@@ -701,6 +702,7 @@ func (e *Extension) Run() error {
 		return fmt.Errorf("first host frame must be hello_ack (got %q)", ack.Type)
 	}
 	e.callToolReady.Store(slices.Contains(ack.Capabilities, "call_tool"))
+	e.callToolDurable.Store(slices.Contains(ack.Capabilities, "call_tool_durable"))
 	e.host = HostInfo{
 		ProtocolVersion: ack.ProtocolVersion,
 		ZotVersion:      ack.ZotVersion,

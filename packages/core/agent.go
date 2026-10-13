@@ -980,6 +980,10 @@ func (a *Agent) runTool(ctx context.Context, tc provider.ToolCallBlock, sink fun
 		toolCtx := a.withToolRuntime(ctx, tc, sink)
 		runtime = ToolRuntimeFromContext(toolCtx)
 		out, err := tool.Execute(toolCtx, args, func(text string) {
+			if observer, ok := toolCtx.Value(toolProgressObserver{}).(func(AgentEvent)); ok && observer != nil {
+				observer(EvToolProgress{ID: tc.ID, Text: text})
+				return
+			}
 			if sink != nil {
 				sink(EvToolProgress{ID: tc.ID, Text: text})
 			}

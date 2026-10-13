@@ -25,6 +25,7 @@ type Approval struct {
 	RunID          string `json:"run_id"`
 	CallID         string `json:"call_id"`
 	Tool           string `json:"tool"`
+	ParentTool     string `json:"parent_tool,omitempty"`
 	// Args are the effective arguments the decision applies to. ArgsHash is
 	// their SHA-256 so a decision for different arguments is detected.
 	Args     json.RawMessage `json:"args"`

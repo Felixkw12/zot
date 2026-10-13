@@ -26,6 +26,7 @@ type UsageRecord struct {
 	// Source is model or tool.
 	Source string `json:"source"`
 	Tool   string `json:"tool,omitempty"`
+	TaskID string `json:"task_id,omitempty"`
 	// Time is the commit time of rows written since it was introduced.
 	Time time.Time `json:"time,omitzero"`
 }

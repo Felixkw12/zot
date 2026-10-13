@@ -129,7 +129,7 @@ done
 			if call.Name == "probe" {
 				guarded++
 				identity, ok := continuous.ToolCallFromContext(ctx)
-				if !ok || identity.CallID != "parent/1" || identity.ConversationID != c.ID || core.ToolOperationKey(ctx) != identity.OperationKey() {
+				if !ok || identity.CallID != "parent/n/1" || identity.ConversationID != c.ID || core.ToolOperationKey(ctx) != identity.OperationKey() {
 					t.Errorf("nested extension identity: %+v present=%v", identity, ok)
 				}
 				if mgr.ToolCallOrigin(call.ID) != "nested" {

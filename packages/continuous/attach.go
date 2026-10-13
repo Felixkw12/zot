@@ -196,7 +196,7 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 					delta = p.Text[len(prev):]
 				}
 				if delta != "" {
-					sink(core.EvToolProgress{ID: p.CallID, Text: delta})
+					sink(projectToolProgress(p, delta))
 				}
 			}
 			// Streamed text arrives as partial records; render the delta since

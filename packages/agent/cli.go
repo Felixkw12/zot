@@ -338,6 +338,9 @@ func setupNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, 
 func loadNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, version string) (*extensions.Manager, func(), []error) {
 	reportSkillDiagnostics(os.Stderr, r.SkillDiagnostics)
 	extMgr := extensions.New(ZotHome(), r.CWD, version, r.Provider, r.Model, nonInteractiveExtHooks{})
+	if version == "continuous" {
+		extMgr.EnableDurableToolCalls()
+	}
 	errs := extMgr.LoadExplicit(ctx, args.Exts)
 	if !args.NoExt {
 		errs = append(errs, extMgr.Discover(ctx)...)

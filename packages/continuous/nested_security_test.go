@@ -51,7 +51,7 @@ func TestNestedSecurityIdentityAndReplayKey(t *testing.T) {
 	var parentKeys, childKeys []string
 	started := make(chan struct{}, 1)
 	block := make(chan struct{})
-	inner := &nestedSecurityTool{effectTool: &effectTool{name: "inner"}}
+	inner := &nestedSecurityTool{effectTool: &effectTool{name: "inner", replay: core.ReplaySafe}}
 	inner.execute = func(ctx context.Context) (core.ToolResult, error) {
 		id, ok := ToolCallFromContext(ctx)
 		if !ok {
@@ -61,7 +61,13 @@ func TestNestedSecurityIdentityAndReplayKey(t *testing.T) {
 		children = append(children, id)
 		childKeys = append(childKeys, core.ToolOperationKey(ctx))
 		mu.Unlock()
-		return core.ToolResult{}, nil
+		started <- struct{}{}
+		select {
+		case <-block:
+			return core.ToolResult{}, nil
+		case <-ctx.Done():
+			return core.ToolResult{}, ctx.Err()
+		}
 	}
 	outer := &nestedSecurityTool{effectTool: &effectTool{name: "outer", replay: core.ReplaySafe}}
 	outer.execute = func(ctx context.Context) (core.ToolResult, error) {
@@ -71,7 +77,6 @@ func TestNestedSecurityIdentityAndReplayKey(t *testing.T) {
 		parentKeys = append(parentKeys, core.ToolOperationKey(ctx))
 		mu.Unlock()
 		result := core.ToolRuntimeFromContext(ctx).Call(ctx, "inner", json.RawMessage(`{}`))
-		started <- struct{}{}
 		select {
 		case <-block:
 			return result, nil
@@ -110,7 +115,7 @@ func TestNestedSecurityIdentityAndReplayKey(t *testing.T) {
 		t.Fatalf("calls: parents=%v children=%v", parents, children)
 	}
 	t.Run("identity", func(t *testing.T) {
-		if children[0] == parents[0] || children[0].CallID != "c1/1" || children[0].ConversationID != c.ID || children[0] != children[1] {
+		if children[0] == parents[0] || children[0].CallID != "c1/n/1" || children[0].ConversationID != c.ID || children[0] != children[1] {
 			t.Fatalf("child identity: parents=%v children=%v", parents, children)
 		}
 	})

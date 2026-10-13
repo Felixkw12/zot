@@ -227,6 +227,7 @@ type CallToolFromExt struct {
 	Name     string          `json:"name"`
 	Args     json.RawMessage `json:"args"`
 	ParentID string          `json:"parent_id,omitempty"`
+	Key      string          `json:"key,omitempty"`
 }
 
 // ToolResultFromHost is correlated to CallToolFromExt, not to a model call.

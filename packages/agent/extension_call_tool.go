@@ -51,6 +51,7 @@ func extensionToolCaller(mgr *extensions.Manager, active func() *core.Agent) fun
 		ctx = context.WithValue(ctx, extensionOriginKey{}, origin)
 		var res core.ToolResult
 		if active == nil {
+			ctx = core.WithNestedToolOrigin(ctx, origin)
 			var untrack []func()
 			defer func() {
 				for _, done := range untrack {

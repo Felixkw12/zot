@@ -45,7 +45,7 @@ const (
 	TaskKindCompaction = "zot.compaction"
 
 	generationVersion = 1
-	toolVersion       = 1
+	toolVersion       = 2
 	compactionVersion = 1
 
 	// executorTasks marks recovery actions of generation chains.
@@ -102,10 +102,14 @@ type toolRef struct {
 }
 
 type toolInput struct {
-	RunID  string          `json:"run_id"`
-	CallID string          `json:"call_id"`
-	Name   string          `json:"name"`
-	Args   json.RawMessage `json:"args,omitempty"`
+	ParentTask string          `json:"parent_task,omitempty"`
+	NestedKey  string          `json:"nested_key,omitempty"`
+	Depth      int             `json:"depth,omitempty"`
+	Origin     string          `json:"origin,omitempty"`
+	RunID      string          `json:"run_id"`
+	CallID     string          `json:"call_id"`
+	Name       string          `json:"name"`
+	Args       json.RawMessage `json:"args,omitempty"`
 	// After is the previous sibling. Tools of a round run sequentially.
 	After string `json:"after,omitempty"`
 	// Turn is the generation turn that requested the call.
@@ -134,8 +138,10 @@ type toolCheckpoint struct {
 const maxUnresolved = 5
 
 type toolOutcome struct {
-	Entry  uint64 `json:"entry"`
-	Status string `json:"status"`
+	Nested   *storedNestedResult `json:"nested,omitempty"`
+	Executed bool                `json:"executed,omitempty"`
+	Entry    uint64              `json:"entry"`
+	Status   string              `json:"status"`
 	// Handoff is set when the result ended the chain with a handoff.
 	Handoff bool `json:"handoff,omitempty"`
 	// Terminate is set when the result asked to end the run without
@@ -545,6 +551,15 @@ func NewNativeExecutor(r *Runtime, engine func() Engine, opts ExecutionOptions) 
 // inputs at every tick.
 func (x *NativeExecutor) Scheduler(reg TaskRegistry) *TaskScheduler {
 	s := NewTaskScheduler(x.r, reg)
+	// Nested work executes only after a live parent supplies its operation.
+	// Recovery of a non-replayed parent aborts descendants instead.
+	s.Ready = func(t Task) bool {
+		if t.Kind != TaskKindTool {
+			return true
+		}
+		var in toolInput
+		return json.Unmarshal(t.Input, &in) == nil && in.ParentTask == ""
+	}
 	if x.opts.Extensions != nil {
 		s.Resolve = x.opts.Extensions.task
 	}
@@ -587,6 +602,12 @@ func (x *NativeExecutor) Register(reg TaskRegistry) error {
 	}
 	if err := reg.Register(TaskDefinition{
 		Kind: TaskKindTool, Version: toolVersion, JoinOnAbort: true,
+		Migrate: func(from int, phase string, checkpoint json.RawMessage) (string, json.RawMessage, error) {
+			if from != 1 {
+				return "", nil, fmt.Errorf("unsupported tool task version %d", from)
+			}
+			return phase, checkpoint, nil
+		},
 		Initial: func(raw json.RawMessage) (Next, error) {
 			var in toolInput
 			if err := json.Unmarshal(raw, &in); err != nil || in.CallID == "" || in.Name == "" {
@@ -1358,12 +1379,20 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 	if err != nil {
 		return Next{}, err
 	}
-	agent, err := prepareAgent(ctx, x.engine(), tc.Snapshot, c, 0, exts)
-	if err != nil {
-		return Next{}, err
+	var agent *core.Agent
+	if binding, ok := ctx.Value(nestedBindingKey{}).(*nestedBinding); ok && in.ParentTask != "" {
+		agent = binding.guard
+	} else {
+		agent, err = prepareAgent(ctx, x.engine(), tc.Snapshot, c, 0, exts)
+		if err != nil {
+			return Next{}, err
+		}
+		x.wireNestedExecution(agent, c.ID)
 	}
-	wireNestedExecution(x.r, agent, c.ID, exts)
+	ctx = context.WithValue(ctx, toolTaskContextKey{}, tc)
 	identity := ToolCallIdentity{RunID: in.RunID, ConversationID: c.ID, CallID: in.CallID}
+	ctx = context.WithValue(ctx, toolCallKey{}, identity)
+	ctx = core.WithToolOperationKey(ctx, identity.OperationKey())
 	call := provider.ToolCallBlock{ID: in.CallID, Name: in.Name, Arguments: in.Args}
 	// Events of the call are held until the commit that records them.
 	gate := newEventGate(x.opts.Sink)
@@ -1397,6 +1426,14 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 			status = "interrupted"
 		}
 		call.Arguments = cp.Args
+		if !replayed {
+			if err := tc.Commit(ctx, func(tx *TaskTx) error { return abortNestedChildren(tx) }); err != nil {
+				return Next{}, err
+			}
+			if err := x.awaitNestedSettlement(ctx, tc); err != nil {
+				return Next{}, err
+			}
+		}
 	default:
 		args, allowed, reason, policy := authorizeCall(ctx, x.r, agent, c.ID, call, exts, nil)
 		if !allowed {
@@ -1475,15 +1512,28 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 			status = "failed"
 		}
 	}
+	// A replay may omit calls issued by an earlier invocation. Settle those
+	// owned children before publishing the parent's result.
+	if err := tc.Commit(ctx, abortNestedChildren); err != nil {
+		return Next{}, err
+	}
+	if err := x.awaitNestedSettlement(ctx, tc); err != nil {
+		return Next{}, err
+	}
 	ev := core.EvToolResult{ID: call.ID, Name: call.Name, Args: call.Arguments, Status: status, Executed: executed, Result: result}
 	req, handoff := handoffFromResult(call.Name, result)
 	return Next{
 		Commit: func(tx *TaskTx) (Next, error) {
-			if handoff && !tx.Task().AbortRequested {
+			if handoff && in.ParentTask == "" && !tx.Task().AbortRequested {
 				return commitHandoff(tx, in, call.ID, result, req)
 			}
 			next, err := commitToolResult(tx, call.ID, result, status, notice, "completed")
-			if err == nil && result.Terminate && executed {
+			if err == nil && in.ParentTask != "" {
+				out := next.Result.(toolOutcome)
+				out.Executed = executed
+				next.Result = out
+			}
+			if err == nil && in.ParentTask == "" && result.Terminate && executed {
 				next.Result = toolOutcome{Entry: next.Result.(toolOutcome).Entry, Status: status, Terminate: true}
 			}
 			return next, err
@@ -1513,6 +1563,14 @@ func (x *NativeExecutor) requestApproval(c Conversation, in toolInput, cp toolCh
 			return Next{}, err
 		}
 		a = Approval{ID: uuid.NewString(), ConversationID: c.ID, RunID: in.RunID, CallID: call.ID, Tool: call.Name, Args: args, ArgsHash: argsHash(args), Summary: req.Summary, State: approvalPending, PolicyRevision: fresh.ConfigRevision, Created: time.Now().UTC(), Revision: tx.Snapshot.Revision() + 1}
+		if in.ParentTask != "" {
+			var parent toolInput
+			if t, ok, _ := read[Task](tx.Snapshot, taskKey(in.ParentTask)); ok {
+				_ = json.Unmarshal(t.Input, &parent)
+			}
+			a.ParentTool = parent.Name
+			a.Summary = fmt.Sprintf("%s (nested in %s)", firstNonEmpty(req.Summary, call.Name), parent.Name)
+		}
 		if req.TTL > 0 {
 			exp := a.Created.Add(req.TTL)
 			a.ExpiresAt = &exp
@@ -1607,6 +1665,18 @@ func (x *NativeExecutor) abortTool(ctx context.Context, tc TaskContext) (Next, e
 }
 
 func commitToolResult(tx *TaskTx, callID string, result core.ToolResult, status, notice, outcome string) (Next, error) {
+	var in toolInput
+	if err := json.Unmarshal(tx.Task().Input, &in); err != nil {
+		return Next{}, err
+	}
+	if in.ParentTask != "" {
+		return commitNestedResult(tx, in, result, status, notice, outcome)
+	}
+	nested, err := committedNestedCalls(tx.View(), tx.Task().ID)
+	if err != nil {
+		return Next{}, err
+	}
+	result.NestedCalls = nested
 	c, err := conversation(tx.View(), tx.Task().ConversationID)
 	if err != nil {
 		return Next{}, err
@@ -1614,7 +1684,7 @@ func commitToolResult(tx *TaskTx, callID string, result core.ToolResult, status,
 	c.EntrySequence++
 	block := provider.ToolResultBlock{CallID: callID, Content: result.Content, IsError: result.IsError}
 	entry := Entry{ID: uuid.NewString(), ConversationID: c.ID, Revision: tx.Snapshot.Revision() + 1, Type: entryToolResult, Content: core.ToolResultText(result), Time: time.Now().UTC()}
-	entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC()})
+	entry.Message = marshalMessage(provider.Message{Role: provider.RoleTool, Content: []provider.Content{block}, Time: time.Now().UTC(), Meta: nestedMetadata(callID, result.NestedCalls)})
 	tx.Put(entryKey(c.ID, c.EntrySequence), entry)
 	c.Revision = tx.Snapshot.Revision() + 1
 	tx.Put("conversation/"+c.ID, c)
@@ -1929,11 +1999,12 @@ func (p *taskPartial) stop() {
 
 // ToolProgress is the bounded, committed progress of a running tool task.
 type ToolProgress struct {
-	TaskID    string    `json:"task_id"`
-	CallID    string    `json:"call_id"`
-	Text      string    `json:"text"`
-	Truncated bool      `json:"truncated,omitempty"`
-	Updated   time.Time `json:"updated"`
+	TaskID       string    `json:"task_id"`
+	CallID       string    `json:"call_id"`
+	ParentCallID string    `json:"parent_call_id,omitempty"`
+	Text         string    `json:"text"`
+	Truncated    bool      `json:"truncated,omitempty"`
+	Updated      time.Time `json:"updated"`
 }
 
 func progressKey(taskID string) string { return "progress/" + taskID }
@@ -1975,6 +2046,9 @@ func (p *toolProgress) add(text string, ev core.AgentEvent) {
 func (p *toolProgress) flush() {
 	p.mu.Lock()
 	rec := ToolProgress{TaskID: p.tc.Task.ID, CallID: p.call, Text: p.text, Truncated: p.trunc, Updated: time.Now().UTC()}
+	if in, _, err := decodeTool(p.tc.Task); err == nil && in.ParentTask != "" {
+		rec.ParentCallID = strings.SplitN(in.CallID, "/n/", 2)[0]
+	}
 	p.last = rec.Updated
 	upto := p.gate.cover()
 	p.mu.Unlock()
@@ -2195,6 +2269,22 @@ func planChain(snap storage.Snapshot, chain Chain) RecoveryAction {
 			a.Action, a.Detail = "continue", "the next model request has not started"
 		}
 	}
+	if ok {
+		_, cp, err := decodeGeneration(gen)
+		if err == nil {
+			for _, ref := range cp.Calls {
+				if parent, found, _ := read[Task](snap, taskKey(ref.Task)); found {
+					_, intent, _ := decodeTool(parent)
+					replay := parent.Effect == "" || (intent.Replay != core.ReplayNever && intent.Replay != "")
+					children, safe := nestedRecovery(snap, parent, replay)
+					a.Nested = append(a.Nested, children...)
+					if !safe {
+						a.Automatic = false
+					}
+				}
+			}
+		}
+	}
 	return a
 }
 
@@ -2301,6 +2391,19 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		}
 		if n > 0 {
 			continue
+		}
+		// Parents blocked on a nested approval hold no worker but keep the
+		// scheduler busy. When every ancestor of the waiting call can replay,
+		// release them and report the parked state like a top-level call. The
+		// committed child reuses its approval when the parent replays.
+		if sched.parkedOnly() {
+			if fresh, err := s.r.store.Snapshot(ctx); err == nil && nestedApprovalReleasable(fresh, conversationID) {
+				sched.cancelActive()
+				if err := sched.Join(ctx); err != nil {
+					return last, true, err
+				}
+				return last, true, ErrAwaitingApproval
+			}
 		}
 		if sched.idle() {
 			// Decide on state committed after this tick's invocations.

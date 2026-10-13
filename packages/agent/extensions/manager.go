@@ -184,8 +184,9 @@ type Manager struct {
 	// the freshly-registered extension tools.
 	onReload func()
 	// callTool is wired by the active host mode, not by the extension registry.
-	callTool    func(context.Context, string, string, json.RawMessage) extproto.ToolResultFromHost
-	callOrigins map[string]string
+	callTool         func(context.Context, string, string, json.RawMessage) extproto.ToolResultFromHost
+	callOrigins      map[string]string
+	durableToolCalls atomic.Bool
 
 	// lifecycleMu serializes session boundaries and notification enqueue order.
 	lifecycleMu   sync.Mutex
@@ -797,10 +798,14 @@ func (m *Manager) spawn(ctx context.Context, ext *Extension) error {
 	ext.toolCancel = slices.Contains(hello.Capabilities, "tool_cancel")
 	ext.callTool = slices.Contains(hello.Capabilities, "call_tool")
 
+	capabilities := []string{"call_tool"}
+	if m.durableToolCalls.Load() {
+		capabilities = append(capabilities, "call_tool_durable")
+	}
 	ack, _ := extproto.Encode(extproto.HelloAckFromHost{
 		Type:            "hello_ack",
 		ProtocolVersion: extproto.ProtocolVersion,
-		Capabilities:    []string{"call_tool"},
+		Capabilities:    capabilities,
 		ZotVersion:      m.zotVersion,
 		Provider:        m.provider,
 		Model:           m.model,
@@ -1039,7 +1044,13 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 					if req.ParentID != "" && found {
 						base = parent.ctx
 					}
-					ctx, cancel := context.WithTimeout(base, 60*time.Second)
+					var ctx context.Context
+					var cancel context.CancelFunc
+					if m.durableToolCalls.Load() && found && req.ParentID != "" {
+						ctx, cancel = context.WithCancel(core.WithNestedToolTimeout(base, 60*time.Second))
+					} else {
+						ctx, cancel = context.WithTimeout(base, 60*time.Second)
+					}
 					ext.inboundCalls[req.ID] = cancel
 					go m.handleCallTool(ctx, ext, req, cancel, found, activeOutbound, parent.chain)
 				}

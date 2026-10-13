@@ -25,7 +25,7 @@ func TestNestedToolExecutorWrapsExecution(t *testing.T) {
 			ag.NestedToolExecutor = func(ctx context.Context, parent, call provider.ToolCallBlock, supplied Tool, execute func(context.Context, provider.ToolCallBlock) ToolResult) ToolResult {
 				hooks++
 				runtime := ToolRuntimeFromContext(ctx)
-				if runtime == nil || runtime.Agent() != ag || parent.ID != "root" || call.ID != "root/1" || call.Name != "echo" || supplied != nil {
+				if runtime == nil || runtime.Agent() != ag || parent.ID != "root" || call.ID != "root/n/1" || call.Name != "echo" || supplied != nil {
 					t.Fatalf("nested execution context: parent=%+v call=%+v tool=%v", parent, call, supplied)
 				}
 				if blocked {

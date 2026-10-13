@@ -184,12 +184,15 @@ type TaskContext struct {
 	inv *taskInvocation
 }
 
+type workerSlotKey struct{}
+
 // taskInvocation tracks the committed record an invocation last wrote, so
 // task-scoped commits are fenced on it and runOnce continues from it.
 type taskInvocation struct {
 	s    *TaskScheduler
 	mu   sync.Mutex
 	task Task
+	slot string
 }
 
 func (inv *taskInvocation) current() Task {
@@ -489,18 +492,26 @@ type TaskScheduler struct {
 	// task the recovery policy holds for a human. Abort marks are still
 	// committed; the task runs once Hold releases it.
 	Hold func(Task) bool
+	// Ready can require a live parent binding before dispatch. Abort handlers
+	// are exempt so orphaned owned work can always settle.
+	Ready func(Task) bool
 	// Resolve, when set, supplies definitions of kinds missing from the
 	// registry, read at every use, for example task kinds of registered
 	// extensions. A kind neither knows blocks its tasks; none is dropped.
 	Resolve func(kind string) (TaskDefinition, bool)
 
-	mu     sync.Mutex
-	active map[string]context.CancelFunc
+	mu        sync.Mutex
+	active    map[string]context.CancelFunc
+	suspended map[string]int
 	// aborting marks invocations that already run the abort handler; they
 	// are never cancelled by a later abort mark.
 	aborting map[string]bool
 	done     chan taskResult
 	running  sync.WaitGroup
+	// scanned is the revision Tick inspected. Waiting from a newer snapshot
+	// would lose commits between selection and wait registration.
+	scanned uint64
+	wake    chan struct{}
 }
 
 // lookup resolves a task kind through the registry, then Resolve.
@@ -517,7 +528,7 @@ func (s *TaskScheduler) lookup(kind string) (TaskDefinition, bool) {
 }
 
 func NewTaskScheduler(r *Runtime, registry TaskRegistry) *TaskScheduler {
-	return &TaskScheduler{r: r, registry: registry, now: func() time.Time { return time.Now().UTC() }, active: map[string]context.CancelFunc{}, aborting: map[string]bool{}}
+	return &TaskScheduler{r: r, registry: registry, now: func() time.Time { return time.Now().UTC() }, active: map[string]context.CancelFunc{}, aborting: map[string]bool{}, wake: make(chan struct{}, 1)}
 }
 
 // Tick dispatches every runnable task that is not already running in this
@@ -553,18 +564,19 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 		if err := ctx.Err(); err != nil {
 			break
 		}
-		s.mu.Lock()
-		inflight := len(s.active)
-		// Reserve a result slot for each active invocation. Completion can
-		// then publish under mu without blocking on a full channel.
-		full := inflight+len(done) >= cap(done)
-		s.mu.Unlock()
-		if inflight >= workers || full {
-			break
-		}
 		snap, err := s.r.store.Snapshot(ctx)
 		if err != nil {
 			return 0, wake, err
+		}
+		s.mu.Lock()
+		s.scanned = snap.Revision()
+		inflight := s.workerCountLocked()
+		// Reserve a result slot for each active invocation. Completion can
+		// then publish under mu without blocking on a full channel.
+		full := len(s.active)+len(done) >= cap(done)
+		s.mu.Unlock()
+		if inflight >= workers || full {
+			break
 		}
 		runnable, nextWake, err := s.selectRunnable(ctx, snap)
 		if err != nil {
@@ -585,7 +597,7 @@ func (s *TaskScheduler) Tick(ctx context.Context) (int, time.Time, error) {
 		s.mu.Lock()
 		// Recheck at reservation in case another Tick dispatched while
 		// this one was selecting a task.
-		if len(s.active) >= workers || len(s.active)+len(done) >= cap(done) {
+		if s.workerCountLocked() >= workers || len(s.active)+len(done) >= cap(done) {
 			s.mu.Unlock()
 			cancelInv()
 			s.r.claims.Delete(runnable.ID)
@@ -696,14 +708,13 @@ func (s *TaskScheduler) Run(ctx context.Context) error {
 // waitProgress blocks until an invocation finishes, a commit lands, the
 // timer fires, or ctx ends. Finished results stay queued for the next Tick.
 func (s *TaskScheduler) waitProgress(ctx context.Context, wake time.Time) error {
-	snap, err := s.r.store.Snapshot(ctx)
-	if err != nil {
-		return err
-	}
+	s.mu.Lock()
+	revision := s.scanned
+	s.mu.Unlock()
 	waitCtx, cancelWait := context.WithCancel(ctx)
 	defer cancelWait()
 	changed := make(chan error, 1)
-	store, revision := s.r.store, snap.Revision()
+	store := s.r.store
 	go func() { changed <- store.Wait(waitCtx, revision) }()
 	var timer <-chan time.Time
 	if !wake.IsZero() {
@@ -733,6 +744,8 @@ func (s *TaskScheduler) waitProgress(ctx context.Context, wake time.Time) error 
 		done <- res
 		return nil
 	case <-timer:
+		return nil
+	case <-s.wake:
 		return nil
 	case err := <-changed:
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -820,6 +833,9 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 			}
 			if t.Blocked != "" {
 				// Blocked cleanup needs a human (Runtime.RetryCleanup).
+				continue
+			}
+			if !t.AbortRequested && s.Ready != nil && !s.Ready(t) {
 				continue
 			}
 			if s.Hold != nil && s.Hold(t) {
@@ -1056,7 +1072,12 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 	if err != nil {
 		return err
 	}
-	inv := &taskInvocation{s: s, task: t}
+	slot, _ := ctx.Value(workerSlotKey{}).(string)
+	if slot == "" {
+		slot = t.ID
+		ctx = context.WithValue(ctx, workerSlotKey{}, slot)
+	}
+	inv := &taskInvocation{s: s, task: t, slot: slot}
 	tc := TaskContext{Task: t, Snapshot: snap, Waited: waited, Interrupted: t.Effect == effectStarted, inv: inv}
 	if cleanup {
 		// Compensation after a decided failed or aborted outcome.

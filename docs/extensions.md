@@ -209,7 +209,9 @@ image blocks. Results are bounded to 256 KiB and mark `truncated: true` when
 shortened. Each request is synchronous for its caller, but multiple requests
 can be outstanding concurrently if they use distinct IDs. A
 `call_tool_cancel` frame with the same ID cancels the request. Calls time out
-after 60 seconds or when the extension disconnects. Cancellation cannot undo
+after 60 seconds or when the extension disconnects. On continuous hosts,
+parented durable calls instead apply the 60-second bound only to execution,
+not approval or dependency waits. Cancellation cannot undo
 side effects that have already completed.
 
 Calls use the active agent's tool registry, guard interception, and normal
@@ -230,14 +232,32 @@ In continuous mode, every `call_tool` requires a live, resolvable parent tool
 invocation. Parentless requests, including requests from slash commands, are
 refused even when no tool is active. Nested calls execute on the parent's
 conversation agent and pass that conversation's allowlist, extension hooks,
-and host guard. Each receives its own call identity and operation key.
+and host guard. Each receives its own call identity and operation key, durable
+owned task, approval and committed result. A replay reuses completed children
+rather than executing them again.
+
+Continuous hosts advertise the optional `call_tool_durable` capability in
+`hello_ack`. Such hosts honor an optional replay-stable `key`:
+
+```json
+{"type":"call_tool","id":"request-1","name":"read","args":{"path":"a"},
+ "parent_id":"parent-1","key":"step-1"}
+```
+
+Without a key, calls use per-parent ordinals. Concurrent or reordered calls
+need explicit keys for deterministic reuse. Keys are at most 128 bytes and
+cannot contain `/` or NUL. A key reused with a different tool or normalized
+arguments is refused without execution. `tool_result` is unchanged.
 
 A concurrent command-initiated request from that extension is therefore also
 refused until its host-invoked tool finishes. Interactive tools can outlive the
 60-second request deadline only when invoked by the model, not via `call_tool`.
 
-The Go SDK exposes `e.CallTool(ctx, name, args)` and rejects older hosts
-immediately. A tool handler's context supplies `parent_id` automatically.
+The Go SDK exposes `e.CallTool(ctx, name, args, options...)` and rejects hosts
+without `call_tool` immediately. Existing three-argument callers still compile.
+Use `ext.WithCallKey("step-1")` for a durable key. The SDK sends the key only
+when `call_tool_durable` is advertised, so older hosts keep their existing wire
+format. A tool handler's context supplies `parent_id` automatically.
 Tool failures return `ToolResult.IsError`, while context and transport failures
 return a Go error. Extensions have no direct access to another extension's
 process or built-in implementation.
