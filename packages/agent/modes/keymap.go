@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	keymapcfg "github.com/patriceckhart/zot/packages/agent/keymap"
 	"github.com/patriceckhart/zot/packages/tui"
 )
 
@@ -14,12 +15,17 @@ type keymapBinding struct {
 	name    string // normalized chord name, for example "ctrl+shift+g"
 	spec    configuredKey
 	command string
+	action  string
 }
 
 // compileKeymap parses a config.json keymap into bindings sorted by
 // chord name. Invalid entries are dropped and reported in issues so the
 // interactive mode can surface them instead of silently ignoring them.
-func compileKeymap(keymap map[string]string) (bindings []keymapBinding, issues []string) {
+func compileKeymap(keymap map[string]string) ([]keymapBinding, []string) {
+	return compileKeyBindings(keymapcfg.Commands(keymap))
+}
+
+func compileKeyBindings(keymap keymapcfg.Map) (bindings []keymapBinding, issues []string) {
 	for _, name := range sortedCustomKeys(keymap) {
 		spec, ok := parseConfiguredKey(name)
 		if !ok {
@@ -30,12 +36,24 @@ func compileKeymap(keymap map[string]string) (bindings []keymapBinding, issues [
 			issues = append(issues, fmt.Sprintf("keymap: %q is reserved and cannot be rebound", name))
 			continue
 		}
-		command := strings.TrimSpace(keymap[name])
+		value := keymap[name]
+		binding := keymapBinding{name: strings.ToLower(strings.TrimSpace(name)), spec: spec}
+		if value.Action != "" || value.Context != "" {
+			if value.Command != "" || value.Context != "navigation" || (value.Action != "next" && value.Action != "previous") {
+				issues = append(issues, fmt.Sprintf("keymap: %q must use action next or previous with context navigation", name))
+				continue
+			}
+			binding.action = value.Action
+			bindings = append(bindings, binding)
+			continue
+		}
+		command := strings.TrimSpace(value.Command)
 		if command == "" || !strings.HasPrefix(command, "/") {
 			issues = append(issues, fmt.Sprintf("keymap: %q must map to a slash command, got %q", name, command))
 			continue
 		}
-		bindings = append(bindings, keymapBinding{name: strings.ToLower(strings.TrimSpace(name)), spec: spec, command: command})
+		binding.command = command
+		bindings = append(bindings, binding)
 	}
 	return bindings, issues
 }
@@ -44,17 +62,19 @@ func compileKeymap(keymap map[string]string) (bindings []keymapBinding, issues [
 // match wins over the legacy Ctrl+letter fallback so enhanced-protocol
 // terminals can bind ctrl+g and ctrl+shift+g independently.
 func lookupKeymap(bindings []keymapBinding, key tui.Key) string {
-	for _, b := range bindings {
-		if b.spec.matches(key, false) {
-			return b.command
+	binding, _ := lookupKeyBinding(bindings, key)
+	return binding.command
+}
+
+func lookupKeyBinding(bindings []keymapBinding, key tui.Key) (keymapBinding, bool) {
+	for _, lenient := range []bool{false, true} {
+		for _, b := range bindings {
+			if b.spec.matches(key, lenient) {
+				return b, true
+			}
 		}
 	}
-	for _, b := range bindings {
-		if b.spec.matches(key, true) {
-			return b.command
-		}
-	}
-	return ""
+	return keymapBinding{}, false
 }
 
 // configuredKeyCommand resolves a configured key chord straight from a
@@ -72,7 +92,7 @@ func configuredKeyCommand(keymap map[string]string, key tui.Key) string {
 
 // sortedCustomKeys returns keymap names in a stable, case-insensitive
 // order for help output and deterministic lookup precedence.
-func sortedCustomKeys(keymap map[string]string) []string {
+func sortedCustomKeys(keymap keymapcfg.Map) []string {
 	keys := make([]string, 0, len(keymap))
 	for key := range keymap {
 		keys = append(keys, key)

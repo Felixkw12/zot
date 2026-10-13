@@ -101,9 +101,13 @@ func renderHelpBlock(th tui.Theme, width int, llamaConfigured, sessionsEnabled b
 	if len(keymap) > 0 {
 		out = append(out, "", tui.Bold("custom keys:"))
 		for _, b := range keymap {
+			description := b.command
+			if b.action != "" {
+				description = "navigation: " + b.action
+			}
 			out = append(out, fmt.Sprintf("  %s  %s",
 				th.FG256(th.Accent, pad(b.name)),
-				th.FG256(th.Muted, b.command)))
+				th.FG256(th.Muted, description)))
 		}
 	}
 

@@ -175,24 +175,44 @@ The setting is applied at startup to both HTTP and HTTPS traffic. Existing `HTTP
 
 ### Configurable shortcuts
 
-Interactive keybindings can be added to `$ZOT_HOME/config.json` under `keymap`. Each key is a case-insensitive chord made of at least one modifier (`ctrl`, `alt`/`option`, `shift`, `cmd`/`super`) plus a single character or a named key (`enter`, `tab`, `space`, `esc`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`). Each value is a slash command: built-in commands, extension commands, and explicitly invoked `/skill:<name>` all work.
+Interactive keybindings can be added to `$ZOT_HOME/config.json` under `keymap`. Each key is a case-insensitive chord made of at least one modifier (`ctrl`, `alt`/`option`, `shift`, `cmd`/`super`) plus a single character or a named key (`enter`, `tab`, `space`, `esc`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`). Each value is either a slash-command string or a navigation action object. Built-in commands, extension commands, and explicitly invoked `/skill:<name>` all work as strings.
 
 ```json
 {
   "keymap": {
     "ctrl+s": "/settings",
     "ctrl+g": "/git-tools:status",
-    "alt+r": "/skill:code-review"
+    "alt+r": "/skill:code-review",
+    "ctrl+n": { "action": "next", "context": "navigation" },
+    "ctrl+p": { "action": "previous", "context": "navigation" }
   }
 }
 ```
 
-Shortcuts run in the main interactive input and use the same dispatch path as
-typing the command. They do not apply while a dialog, extension panel, or
-tool confirmation has focus. Entries that cannot be bound are skipped and
-reported at startup (the message clears with `/clear`): unmodified keys such
-as `enter` or `g`, values that do not start with `/`, and the reserved
-`ctrl+c`, `ctrl+d`, and `esc` chords. `/help` lists the active bindings.
+Slash-command shortcuts run in the main interactive input and use the same
+dispatch path as typing the command. They do not apply while a dialog,
+extension panel, or tool confirmation has focus.
+
+Navigation objects support `"next"` and `"previous"` with the required context
+`"navigation"`. They act like Down and Up in built-in lists and scrollable
+views, including confirmations, and in slash, file, and path suggestion
+popups. Filterable lists keep navigation available while editing the filter.
+Text-only subviews and the main editor without a popup ignore these actions,
+so they do not edit text, browse prompt history, or scroll the main chat.
+Extension panels control their own navigation and do not use these actions.
+There are no default Ctrl+n/p aliases. Add the entries above to enable them,
+or choose other modified chords. Existing arrows continue to work.
+
+Restart zot after changing `config.json`. `/help` lists the active bindings.
+Unbindable chords, invalid command strings, unsupported actions or contexts,
+and the reserved `ctrl+c`, `ctrl+d`, and `esc` chords are skipped and reported
+at startup (the message clears with `/clear`). Unmodified keys such as `enter`
+or `g` cannot be rebound. Malformed binding values (neither a string nor an
+action object, wrong field types, or unknown object fields) cause a config
+parse error. Existing string-valued keymaps remain compatible, and saving
+other settings preserves both command and action entries. Saving refuses to
+overwrite an existing config that cannot be read, parsed, or validated.
+Correct the config first, then retry the settings change.
 
 Terminal limitations: without enhanced keyboard reporting (kitty keyboard
 protocol or xterm `modifyOtherKeys`), a terminal cannot distinguish

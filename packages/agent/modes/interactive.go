@@ -14,6 +14,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
+	keymapcfg "github.com/patriceckhart/zot/packages/agent/keymap"
 	"github.com/patriceckhart/zot/packages/agent/modes/telegram"
 	"github.com/patriceckhart/zot/packages/agent/skills"
 	"github.com/patriceckhart/zot/packages/agent/swarm"
@@ -145,9 +146,13 @@ type InteractiveConfig struct {
 	// forwards Command/Super keypresses, but Ctrl is the displayed chord.
 	QuickModelShortcuts []QuickModelShortcut
 
-	// Keymap maps configured key chords to slash commands. It is copied from
-	// config.json by the CLI and is only active in the main interactive input.
+	// Keymap provides legacy slash-command bindings for Go callers.
+	// Commands are only active in the main interactive input.
 	Keymap map[string]string
+
+	// KeyBindings supports contextual actions as well as slash commands.
+	// Entries take precedence over legacy Keymap entries with the same name.
+	KeyBindings keymapcfg.Map
 
 	// ExtensionThemes returns themes bundled with loaded extensions.
 	ExtensionThemes func() []tui.ThemeOption
@@ -770,7 +775,11 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	i.SetPinnedSkillsPending(cfg.PreloadPinnedSkills)
 	var keymapIssues []string
-	i.keymap, keymapIssues = compileKeymap(cfg.Keymap)
+	bindings := keymapcfg.Commands(cfg.Keymap)
+	for chord, binding := range cfg.KeyBindings {
+		bindings[chord] = binding
+	}
+	i.keymap, keymapIssues = compileKeyBindings(bindings)
 	i.reloadErrors = append(i.reloadErrors, keymapIssues...)
 	i.fileSuggest.SetRecursive(cfg.RecursiveFileSuggest != nil && *cfg.RecursiveFileSuggest)
 	i.suggest.SetFuzzySkills(cfg.FuzzySkillSuggest != nil && *cfg.FuzzySkillSuggest)
@@ -2300,6 +2309,18 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		}
 	}
 
+	// Resolve configured navigation before neutralizing other chords.
+	// Extension panels retain their existing key protocol.
+	if i.dialogOwnsInput() && !i.extPanel.Active() {
+		if binding, ok := lookupKeyBinding(i.keymap, k); ok && binding.action != "" {
+			if i.navigationContextActive() {
+				k = navigationKey(i.keymap, k)
+			} else {
+				return false
+			}
+		}
+	}
+
 	// Ctrl and Super chords reach us as modified runes so the keymap can
 	// bind them on the main input. Dialogs key off bare letters ('r'
 	// renames, 'q' closes, digits answer confirmations) and must not see
@@ -2640,6 +2661,15 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 			i.fileSuggest.Reset()
 			return i.runSlash(ctx, command)
 		}
+	}
+
+	// Navigation actions only apply to popups, never main-editor text,
+	// prompt history, or chat scrolling.
+	if binding, ok := lookupKeyBinding(i.keymap, k); ok && binding.action != "" {
+		if !i.suggest.Active(i.ed.Value()) && !i.fileSuggest.Active(i.ed.Value()) && !i.pathSuggest.Active(i.ed.Value()) {
+			return false
+		}
+		k = navigationKey(i.keymap, k)
 	}
 
 	if slot := quickModelShortcutSlot(k); slot > 0 {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/patriceckhart/zot/packages/agent/codemode"
+	"github.com/patriceckhart/zot/packages/agent/keymap"
 	providerpkg "github.com/patriceckhart/zot/packages/provider"
 	"github.com/patriceckhart/zot/packages/provider/auth"
 )
@@ -49,10 +50,8 @@ type Config struct {
 	// Ctrl+1..9. Cmd+1..9 may also work on terminals that forward Super.
 	QuickModelShortcuts []QuickModelShortcut `json:"quick_model_shortcuts,omitempty"`
 
-	// Keymap maps terminal key chords (for example "ctrl+shift+g") to
-	// interactive slash commands. Values may be built-in commands,
-	// extension commands, or /skill:<name> invocations.
-	Keymap map[string]string `json:"keymap,omitempty"`
+	// Keymap maps terminal chords to slash commands or contextual actions.
+	Keymap keymap.Map `json:"keymap,omitempty"`
 
 	// InlineImagesEnabled controls whether zot draws screenshots inline
 	// when the terminal supports an image protocol. nil/missing means
@@ -263,10 +262,14 @@ func SaveConfig(c Config) error {
 	if err := c.Codemode.Validate(); err != nil {
 		return err
 	}
-	// Preserve the existing user-defined keymap when saving other settings.
-	if existing, err := LoadConfig(); err == nil {
-		c.Keymap = existing.Keymap
+	// Refuse to overwrite an existing config that cannot be loaded.
+	// LoadConfig returns defaults without an error when the file is missing.
+	existing, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("read existing config before saving: %w", err)
 	}
+	// Preserve the existing user-defined keymap when saving other settings.
+	c.Keymap = existing.Keymap
 
 	if err := os.MkdirAll(ZotHome(), 0o755); err != nil {
 		return err

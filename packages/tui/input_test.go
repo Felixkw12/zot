@@ -51,6 +51,25 @@ func TestReaderParsesCSIUHyperNumberAsSuper(t *testing.T) {
 	}
 }
 
+func TestReaderParsesControlNavigationChords(t *testing.T) {
+	for _, tc := range []struct {
+		sequence string
+		want     rune
+	}{
+		{"\x0e", 'n'},
+		{"\x10", 'p'},
+		{"\x1b[110;5u", 'n'},
+		{"\x1b[112;5u", 'p'},
+		{"\x1b[27;5;110~", 'n'},
+		{"\x1b[27;5;112~", 'p'},
+	} {
+		k := readKey(t, tc.sequence)
+		if k.Kind != KeyRune || k.Rune != tc.want || !k.Ctrl || k.Alt || k.Shift || k.Super {
+			t.Fatalf("Read(%q) = %+v, want plain ctrl+%c", tc.sequence, k, tc.want)
+		}
+	}
+}
+
 func TestReaderParsesRawCtrlGAsModifiedRune(t *testing.T) {
 	k := readKey(t, "\x07")
 	if k.Kind != KeyRune || k.Rune != 'g' || !k.Ctrl {
