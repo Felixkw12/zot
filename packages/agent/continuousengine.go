@@ -42,6 +42,9 @@ func loadContinuousEngine(ctx context.Context, args Args, rt *continuous.Runtime
 // Inference settings are resolved per conversation, without changing host tools,
 // filesystem permissions, project instructions, or extension generations.
 func newContinuousEngine(resolved Resolved, mgr *extensions.Manager, rt *continuous.Runtime, service func() *continuous.Service) continuous.Engine {
+	if mgr != nil {
+		mgr.SetToolCaller(extensionToolCaller(mgr, nil))
+	}
 	return continuous.EngineFunc(func(ctx context.Context, c continuous.Conversation) (*core.Agent, error) {
 		inference, err := continuousInference(ctx, resolved, c.Config)
 		if err != nil {
@@ -75,7 +78,7 @@ func newContinuousEngine(resolved Resolved, mgr *extensions.Manager, rt *continu
 			})
 		}
 		ag := local.NewAgent()
-		wireNonInteractiveAgentExtHooks(ctx, ag, mgr)
+		wireNonInteractiveAgentExtLifecycle(ctx, ag, mgr)
 		ag.Tools["subagent"] = &continuous.SubagentTool{Runtime: rt, Service: service()}
 		ag.Tools["handoff"] = continuous.HandoffTool{}
 		return ag, nil

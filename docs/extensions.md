@@ -226,6 +226,12 @@ through the nested call, refuses repeated tool names in a chain, and allows at
 most four tool calls in one chain, including the original tool. Unknown or
 expired parent IDs fail. To avoid untraceable recursion, requests without
 `parent_id` are refused while that extension has a host-invoked tool active.
+In continuous mode, every `call_tool` requires a live, resolvable parent tool
+invocation. Parentless requests, including requests from slash commands, are
+refused even when no tool is active. Nested calls execute on the parent's
+conversation agent and pass that conversation's allowlist, extension hooks,
+and host guard. Each receives its own call identity and operation key.
+
 A concurrent command-initiated request from that extension is therefore also
 refused until its host-invoked tool finishes. Interactive tools can outlive the
 60-second request deadline only when invoked by the model, not via `call_tool`.

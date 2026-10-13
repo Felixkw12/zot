@@ -52,6 +52,11 @@ type Agent struct {
 	// precedence over BeforeToolExecute, retaining the legacy hook for embedders.
 	BeforeToolExecuteContext func(context.Context, provider.ToolCallBlock) (bool, string, json.RawMessage)
 
+	// NestedToolExecutor optionally wraps runtime calls after recursion and
+	// exposure checks. execute runs the normal tool path with the supplied
+	// context and effective call. Nil preserves ordinary nested execution.
+	NestedToolExecutor func(ctx context.Context, parent, call provider.ToolCallBlock, tool Tool, execute func(context.Context, provider.ToolCallBlock) ToolResult) ToolResult
+
 	// BeforeStart replaces the complete system prompt once per runtime session
 	// or explicit prompt/model reset, before any turn starts. It is not called
 	// for ordinary follow-up messages or tool-loop steps.

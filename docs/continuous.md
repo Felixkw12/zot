@@ -1312,6 +1312,30 @@ The CLI picks the backend of an existing store from its files; `--backend` is
 accepted only where a store may be created (`run`, `serve`, `import`) and
 must match an existing store.
 
+## Nested tool calls
+
+Calls through `ToolRuntime.Call` or `Run`, and extension `call_tool` requests,
+pass the conversation's current allowlist, extension `beforeTool` hooks and
+host guard, even while the parent's already-authorized execution has its
+normal guard hooks disabled. Extension callbacks use the parent's conversation
+agent, not the most recently built agent. A continuous `call_tool` without a
+live, resolvable parent is refused, including calls from slash commands.
+Behavior outside continuous mode is unchanged.
+
+Each nested call receives its own `ToolCallIdentity` and operation key. IDs
+use the parent's ID plus a per-invocation ordinal, shared by runtime and
+extension calls. Keys are stable on replay when nested calls occur in the
+same order. Concurrent or reordered nested calls do not have stable operation
+assignment. No explicit nested keys are supported yet.
+
+Nested calls are not durable child tasks and do not consult the continuous
+`Approver`. They have no independent intent, committed result or recovery
+policy. Replaying a parent can repeat a completed nested effect, even when
+that nested tool declares `never`. Do not treat distinct operation keys as
+exactly-once execution without receiver-enforced deduplication. Extension
+`call_tool` retains its 60-second deadline. Recursion and depth limits still
+apply.
+
 ## Remaining work and release gates
 
 Memory storage retains both records and commit history and is for tests and
@@ -1339,7 +1363,8 @@ Not implemented from the specification:
   process, a JSONL operation ledger, no scheduling across workers.
 - Permission lists select tools by name; argument-level policies belong to
   the host guard or an `Approver`.
-- Tools run sequentially. Recovery cannot guarantee exactly-once external
+- Tools run sequentially by default. `AgentConfig.ParallelTools` can run a
+  tool round concurrently. Recovery cannot guarantee exactly-once external
   effects without receiver-enforced operation keys or successful
   reconciliation.
 - Native non-macOS lifecycle runs remain release gates. Linux and Windows

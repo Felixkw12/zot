@@ -364,7 +364,7 @@ func recoverCall(ctx context.Context, r *Runtime, agent *core.Agent, identity To
 	// Give hooks their own copy so an in-place rewrite cannot alter the
 	// committed arguments used for comparison or reconciliation.
 	call.Arguments = append(json.RawMessage(nil), intent.Args...)
-	args, allowed, reason, _ := authorizeCall(ctx, r, agent, identity.ConversationID, call, exts)
+	args, allowed, reason, _ := authorizeCall(ctx, r, agent, identity.ConversationID, call, exts, nil)
 	if !allowed {
 		return fmt.Sprintf("tool %s interrupted, replay denied by current authorization: %s", call.ID, reason), none, false
 	}
@@ -428,8 +428,9 @@ func usageOp(c *Conversation, runID string, turn, attempt int, agent *core.Agent
 
 // authorizeCall applies the conversation's tool configuration and the host's
 // guard to one call and returns the effective arguments and replay policy.
-// It fails closed: an unreadable conversation refuses the call.
-func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversationID string, call provider.ToolCallBlock, exts resolvedExtensions) (json.RawMessage, bool, string, core.ToolReplayPolicy) {
+// It fails closed: an unreadable conversation refuses the call. A non-nil
+// tool supplies a host operation from ToolRuntime.Run instead of registry lookup.
+func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversationID string, call provider.ToolCallBlock, exts resolvedExtensions, tool core.Tool) (json.RawMessage, bool, string, core.ToolReplayPolicy) {
 	args := call.Arguments
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
@@ -453,9 +454,12 @@ func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversat
 		return rewritten.Arguments, false, decision.Reason, core.ReplayNever
 	}
 	call, args = rewritten, rewritten.Arguments
-	tool, err := agent.Tools.Get(call.Name)
-	if err != nil {
-		return args, false, err.Error(), core.ReplayNever
+	if tool == nil {
+		var err error
+		tool, err = agent.Tools.Get(call.Name)
+		if err != nil {
+			return args, false, err.Error(), core.ReplayNever
+		}
 	}
 	if agent.BeforeToolExecuteContext != nil {
 		allowed, reason, modified := agent.BeforeToolExecuteContext(ctx, call)

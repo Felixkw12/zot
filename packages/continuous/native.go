@@ -1362,6 +1362,7 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 	if err != nil {
 		return Next{}, err
 	}
+	wireNestedExecution(x.r, agent, c.ID, exts)
 	identity := ToolCallIdentity{RunID: in.RunID, ConversationID: c.ID, CallID: in.CallID}
 	call := provider.ToolCallBlock{ID: in.CallID, Name: in.Name, Arguments: in.Args}
 	// Events of the call are held until the commit that records them.
@@ -1397,7 +1398,7 @@ func (x *NativeExecutor) runTool(ctx context.Context, tc TaskContext) (Next, err
 		}
 		call.Arguments = cp.Args
 	default:
-		args, allowed, reason, policy := authorizeCall(ctx, x.r, agent, c.ID, call, exts)
+		args, allowed, reason, policy := authorizeCall(ctx, x.r, agent, c.ID, call, exts, nil)
 		if !allowed {
 			result = core.ToolResult{IsError: true, Content: []provider.Content{provider.TextBlock{Text: reason}}}
 			status = "blocked"

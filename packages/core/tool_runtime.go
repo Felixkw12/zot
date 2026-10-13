@@ -17,9 +17,10 @@ type toolRuntimeKey struct{}
 // normal execution path without adding intermediate results to the transcript.
 // It is scoped to one invocation and must not be retained after Execute returns.
 type ToolRuntime struct {
+	agent     *Agent
 	Tools     []provider.Tool
 	State     map[string]json.RawMessage
-	call      func(context.Context, string, json.RawMessage) ToolResult
+	call      func(context.Context, string, json.RawMessage, func(AgentEvent)) ToolResult
 	run       func(context.Context, Tool, json.RawMessage) ToolResult
 	mu        sync.Mutex
 	activated []string
@@ -34,9 +35,18 @@ func ToolRuntimeFromContext(ctx context.Context) *ToolRuntime {
 	return runtime
 }
 
+// Agent returns the agent that owns this invocation. Hosts can resolve
+// callbacks through the parent context rather than a global active agent.
+func (r *ToolRuntime) Agent() *Agent { return r.agent }
+
 // Call executes a nested tool with the caller's cancellation context.
 func (r *ToolRuntime) Call(ctx context.Context, name string, args json.RawMessage) ToolResult {
-	return r.record(r.call(ctx, name, args))
+	return r.CallWithEvents(ctx, name, args, nil)
+}
+
+// CallWithEvents is Call with an additional per-call event observer.
+func (r *ToolRuntime) CallWithEvents(ctx context.Context, name string, args json.RawMessage, sink func(AgentEvent)) ToolResult {
+	return r.record(r.call(ctx, name, args, sink))
 }
 
 func (r *ToolRuntime) record(result ToolResult) ToolResult {
@@ -119,8 +129,8 @@ func (a *Agent) withToolRuntime(ctx context.Context, tc provider.ToolCallBlock, 
 	a.mu.Unlock()
 	var seq atomic.Uint64
 	var eventMu sync.Mutex
-	runtime := &ToolRuntime{Tools: specs, State: state}
-	execute := func(callCtx context.Context, name string, args json.RawMessage, tool Tool) ToolResult {
+	runtime := &ToolRuntime{agent: a, Tools: specs, State: state}
+	execute := func(callCtx context.Context, name string, args json.RawMessage, tool Tool, observer func(AgentEvent)) ToolResult {
 		if tool == nil {
 			for _, spec := range specs {
 				if spec.Name == name && spec.Exposure == "model-only" {
@@ -141,18 +151,33 @@ func (a *Agent) withToolRuntime(ctx context.Context, tc provider.ToolCallBlock, 
 			if sink != nil {
 				sink(ev)
 			}
+			if observer != nil {
+				observer(ev)
+			}
 		}
+		call := provider.ToolCallBlock{ID: id, Name: name, Arguments: args}
 		emit(EvToolCall{ID: id, Name: name, Args: args})
-		return a.runTool(callCtx, provider.ToolCallBlock{ID: id, Name: name, Arguments: args}, emit, tool)
+		if a.NestedToolExecutor == nil {
+			return a.runTool(callCtx, call, emit, tool)
+		}
+		ran := false
+		result := a.NestedToolExecutor(callCtx, tc, call, tool, func(ctx context.Context, effective provider.ToolCallBlock) ToolResult {
+			ran = true
+			return a.runTool(ctx, effective, emit, tool)
+		})
+		if !ran {
+			emit(EvToolResult{ID: id, Name: name, Args: args, Status: result.Status, Result: result})
+		}
+		return result
 	}
-	runtime.call = func(ctx context.Context, name string, args json.RawMessage) ToolResult {
-		return execute(ctx, name, args, nil)
+	runtime.call = func(ctx context.Context, name string, args json.RawMessage, observer func(AgentEvent)) ToolResult {
+		return execute(ctx, name, args, nil, observer)
 	}
 	runtime.run = func(ctx context.Context, tool Tool, args json.RawMessage) ToolResult {
 		if tool == nil {
 			return ToolResult{IsError: true, Status: "blocked", Content: []provider.Content{provider.TextBlock{Text: "missing host operation"}}}
 		}
-		return execute(ctx, tool.Name(), args, tool)
+		return execute(ctx, tool.Name(), args, tool, nil)
 	}
 	return context.WithValue(context.WithValue(ctx, toolChainKey{}, chain), toolRuntimeKey{}, runtime)
 }

@@ -362,6 +362,15 @@ func wireNonInteractiveAgentExtHooks(ctx context.Context, ag *core.Agent, extMgr
 		return
 	}
 	extMgr.SetToolCaller(extensionToolCaller(extMgr, func() *core.Agent { return ag }))
+	wireNonInteractiveAgentExtLifecycle(ctx, ag, extMgr)
+}
+
+// wireNonInteractiveAgentExtLifecycle wires agent hooks without rebinding the
+// manager's host caller. Continuous hosts bind that caller once per generation.
+func wireNonInteractiveAgentExtLifecycle(ctx context.Context, ag *core.Agent, extMgr *extensions.Manager) {
+	if ag == nil || extMgr == nil {
+		return
+	}
 	wireBeforeAgentStart(ag, extMgr, "")
 	ag.BeforeToolExecuteContext = func(ctx context.Context, call provider.ToolCallBlock) (bool, string, json.RawMessage) {
 		res := extMgr.InterceptToolCall(ctx, call.ID, call.Name, call.Arguments)
