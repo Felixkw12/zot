@@ -728,6 +728,19 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 			}
 		}
 		var bubble []string
+		flushBubble := func() {
+			if len(bubble) == 0 {
+				return
+			}
+			if v.CompactUser || v.CompactMode {
+				lines = append(lines, bubble...)
+			} else {
+				lines = append(lines, row(""))
+				lines = append(lines, bubble...)
+				lines = append(lines, row(""))
+			}
+			bubble = nil
+		}
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:
@@ -738,20 +751,14 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					}
 				}
 			case provider.ImageBlock:
-				bubble = append(bubble, row(fmt.Sprintf("[image %s, %d bytes]", b.MimeType, len(b.Data))))
+				// Graphics occupy only their thumbnail rectangle. Keep them
+				// outside text bubbles so padding and captions do not paint
+				// a full-width background around a small image.
+				flushBubble()
+				lines = append(lines, v.RenderImagePreview(b, width, 10)...)
 			}
 		}
-		if len(bubble) > 0 {
-			if v.CompactUser || v.CompactMode {
-				// No tinted padding rows in compact mode; the inter-message
-				// blank from Build() already gives the turn breathing room.
-				lines = append(lines, bubble...)
-			} else {
-				lines = append(lines, row(""))
-				lines = append(lines, bubble...)
-				lines = append(lines, row(""))
-			}
-		}
+		flushBubble()
 	case provider.RoleAssistant:
 		// Assistant rows: no speaker label either. Prose still gets a
 		// small left indent so it visually aligns with tool box body
@@ -1886,6 +1893,10 @@ func wrapCodeLine(line string, width int) []string {
 // content from being drawn on top of the image, we pad with blank rows
 // so the image's real footprint is reflected in the frame height.
 func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
+	return v.renderImageBlockSized(b, width, 20)
+}
+
+func (v *View) renderImageBlockSized(b provider.ImageBlock, width, maxRows int) []string {
 	w, h := ImageDimensions(b.Data)
 	kb := len(b.Data) / 1024
 	// Four-space indent matches every other tool-output row
@@ -1897,15 +1908,14 @@ func (v *View) renderImageBlock(b provider.ImageBlock, width int) []string {
 	if v.ImageProto != ImageProtocolNone {
 		// Clamp rendered width so the image never overflows the chat
 		// column. Subtract a 4-cell indent for the tool result block,
-		// cap at 60 cells, floor at 10.
+		// cap at 60 cells, and use text if the indent cannot fit.
 		cells := width - 4
 		if cells > 60 {
 			cells = 60
 		}
-		if cells < 10 {
-			cells = 10
+		if cells < 1 {
+			return []string{v.Theme.FG256(v.Theme.Muted, info)}
 		}
-		const maxRows = 20
 		if seq := RenderInlineImageScaled(v.ImageProto, b.Data, b.MimeType, cells, maxRows); seq != "" {
 			rows, actualCells := InlineImageFootprint(b.Data, cells, maxRows)
 			if rows < 1 {

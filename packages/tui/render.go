@@ -546,7 +546,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 	w.WriteString(SeqSynchronizedOn)
 	w.WriteString(SeqHideCursor)
 
-	writeFull := func(clear, purgeScrollback bool) {
+	writeFull := func(clear, purgeScrollback bool, firstRow int) {
 		if clear {
 			w.WriteString(SeqDeleteKittyImages)
 			if r.keepScrollback {
@@ -573,7 +573,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 				w.WriteString(MoveTo(1, 1))
 			}
 		}
-		for idx, line := range lines {
+		for idx, line := range lines[firstRow:] {
 			if idx > 0 {
 				w.WriteString("\r\n")
 			}
@@ -657,9 +657,26 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 		// happens when returning from a moderately long dialog to a short one.
 		bottomShrunkAboveViewport = newViewportTop < r.logViewportTop
 	}
-	full := !wasInitialized || len(r.logLines) == 0 || bottomShrunkAboveViewport
+	// Graphics cannot be updated by a text-row diff. Repaint when either
+	// visible frame has images, including removal of an editor thumbnail.
+	hasVisibleImage := func(frame []string) bool {
+		for _, line := range frame[max(0, len(frame)-r.rows):] {
+			if containsImageEscape(line) {
+				return true
+			}
+		}
+		return false
+	}
+	imageRepaint := hasVisibleImage(lines) || hasVisibleImage(r.logLines)
+	full := !wasInitialized || len(r.logLines) == 0 || bottomShrunkAboveViewport || imageRepaint
 	if full {
-		writeFull(true, !wasInitialized)
+		firstRow := 0
+		if wasInitialized && imageRepaint {
+			// Do not replay the entire transcript into native scrollback on
+			// every editor keystroke while a thumbnail is visible.
+			firstRow = max(0, len(lines)-r.rows)
+		}
+		writeFull(true, !wasInitialized, firstRow)
 		r.logInit = true
 	} else {
 		firstChanged := -1
@@ -864,7 +881,7 @@ func (r *Renderer) DrawLog(chat, bottom []string, cursorBottomRow, cursorCol int
 			if len(r.logLines) > len(lines) {
 				extra := len(r.logLines) - len(lines)
 				if extra >= r.rows {
-					writeFull(true, false)
+					writeFull(true, false, 0)
 					fullRepaint = true
 				} else {
 					for e := 0; e < extra; e++ {

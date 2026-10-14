@@ -1123,7 +1123,9 @@ Reporting is limited to the interactive client and work submitted there. It does
 
 ## Inline images
 
-When a tool returns an image (for example `read` on a PNG), zot renders it inline on terminals that support it: **Ghostty**, **Kitty**, **iTerm2**, **WezTerm**. On other terminals you see a text placeholder with MIME type, pixel dimensions, and byte size. Control with the `ZOT_INLINE_IMAGES` env var:
+Pasted clipboard images show a thumbnail above the main chat editor before sending, and image attachments also appear as larger thumbnails in sent user messages, outside the text bubble background. Delete an image's `[clipboard image #N]` marker to remove it from the prompt and hide its preview. Previews are bounded to leave room for the editor and chat. If all attachments cannot fit, a count of hidden previews is shown. Dialogs hide editor previews.
+
+Tool images (for example `read` on a PNG) also render inline. Automatic rendering supports **Ghostty**, **Kitty**, and **WezTerm**. Unsupported terminals and disabled inline rendering use text metadata instead. **iTerm2** defaults to text because its image protocol is unreliable with zot's redraw behavior, but can be forced. Both clipboard previews and sent images respect the inline-image setting in `/settings` and the `ZOT_INLINE_IMAGES` env var:
 
 | Value | Effect |
 |---|---|

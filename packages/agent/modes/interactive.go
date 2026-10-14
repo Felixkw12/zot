@@ -1739,6 +1739,17 @@ func (i *Interactive) redraw() {
 		reflowed = append(reflowed, fitted...)
 		bottom = append(reflowed, bottom[1+len(dialog):]...)
 	}
+	if len(dialog) == 0 && inputStartRow >= 0 {
+		budget := min(12, rows/3, rows-len(bottom)-3)
+		previews := clipboardImagePreviews(i.view, currentInput, i.clipboardImages, cols, budget)
+		if len(previews) > 0 {
+			withPreviews := make([]string, 0, len(bottom)+len(previews))
+			withPreviews = append(withPreviews, bottom[:inputStartRow]...)
+			withPreviews = append(withPreviews, previews...)
+			bottom = append(withPreviews, bottom[inputStartRow:]...)
+			inputStartRow += len(previews)
+		}
+	}
 	chatRows := rows - len(bottom)
 	if chatRows < 1 {
 		chatRows = 1

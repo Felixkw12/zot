@@ -1,13 +1,64 @@
 package modes
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/patriceckhart/zot/packages/provider"
+	"github.com/patriceckhart/zot/packages/tui"
 )
+
+func TestClipboardImagePreviewsMatchActiveMarkersAndBudget(t *testing.T) {
+	view := &tui.View{Theme: tui.Dark, ImageProto: tui.ImageProtocolNone}
+	pending := []clipboardImageAttachment{
+		testClipboardImage("[clipboard image #1]", "png-1"),
+		testClipboardImage("[clipboard image #2]", "png-2"),
+	}
+	text := "[clipboard image #2]"
+	lines := clipboardImagePreviews(view, text, pending, 80, 12)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, pending[0].Marker) || !strings.Contains(joined, pending[1].Marker) || !strings.Contains(joined, "image/png") {
+		t.Fatalf("preview does not match active attachments: %q", joined)
+	}
+	if got := clipboardImagePreviews(view, "deleted", pending, 80, 12); len(got) != 0 {
+		t.Fatal("deleted markers must hide previews")
+	}
+	for budget := 0; budget <= 12; budget++ {
+		lines := clipboardImagePreviews(view, strings.Join([]string{pending[0].Marker, pending[1].Marker}, " "), pending, 80, budget)
+		if len(lines) > budget {
+			t.Fatalf("budget %d: got %d rows", budget, len(lines))
+		}
+	}
+}
+
+func TestClipboardImagePreviewsGraphicsFitBudget(t *testing.T) {
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 20, 100))); err != nil {
+		t.Fatal(err)
+	}
+	view := &tui.View{Theme: tui.Dark, ImageProto: tui.ImageProtocolKitty}
+	pending := []clipboardImageAttachment{
+		{Marker: "[clipboard image #1]", Image: provider.ImageBlock{MimeType: "image/png", Data: data.Bytes()}},
+		{Marker: "[clipboard image #2]", Image: provider.ImageBlock{MimeType: "image/png", Data: data.Bytes()}},
+	}
+	text := pending[0].Marker + " " + pending[1].Marker
+	for _, width := range []int{4, 20, 80} {
+		for budget := 0; budget <= 12; budget++ {
+			lines := clipboardImagePreviews(view, text, pending, width, budget)
+			if len(lines) > budget {
+				t.Fatalf("budget %d: got %d rows", budget, len(lines))
+			}
+			if width == 80 && budget == 12 && strings.Count(strings.Join(lines, ""), "\x1b_G") != 2 {
+				t.Fatal("both active attachments should fit")
+			}
+		}
+	}
+}
 
 func TestReadClipboardImageAndCleanupRemovesTemporaryFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "clipboard.png")
