@@ -145,6 +145,58 @@ func TestLoadUserModelsAcceptsOpenAIResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestLoadUserModelsKeepsGatewayWireFormatsSeparate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(path, []byte(`{
+		"providers": {
+			"gateway-chat": {
+				"baseUrl": "https://gateway.example/v1",
+				"api": "openai",
+				"models": [{"id": "shared-model"}]
+			},
+			"gateway-responses": {
+				"baseUrl": "https://gateway.example/v1",
+				"api": "openai-responses",
+				"models": [{"id": "shared-model"}]
+			},
+			"gateway-messages": {
+				"baseUrl": "https://gateway.example",
+				"api": "anthropic",
+				"models": [{"id": "shared-model"}]
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	models, warnings := LoadUserModelsWithWarnings(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if len(models) != 3 {
+		t.Fatalf("models = %d, want 3", len(models))
+	}
+	for name, want := range map[string]CustomProviderConfig{
+		"gateway-chat":      {BaseURL: "https://gateway.example/v1", API: "openai"},
+		"gateway-responses": {BaseURL: "https://gateway.example/v1", API: APIResponses},
+		"gateway-messages":  {BaseURL: "https://gateway.example", API: "anthropic"},
+	} {
+		if got := CustomProviders()[name]; got != want {
+			t.Errorf("provider %q = %+v, want %+v", name, got, want)
+		}
+		found := false
+		for _, model := range models {
+			if model.Provider == name && model.ID == "shared-model" && model.API == want.API && model.BaseURL == want.BaseURL {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("model for %q missing or has the wrong API/base URL", name)
+		}
+	}
+}
+
 func TestLoadUserModelsWarnsOnUnknownAPI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "models.json")

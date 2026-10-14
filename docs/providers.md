@@ -477,6 +477,45 @@ unknown `api` value falls back to `openai` with a warning.
 }
 ```
 
+### One gateway with multiple API formats
+
+Define a separate custom provider for each wire format a gateway exposes.
+The `api` setting belongs to the provider entry, not to an individual model;
+zot does not choose a wire format from a model ID. For example, A2Agent
+exposes Chat Completions, Responses, and Anthropic Messages at different
+paths:
+
+```json
+{
+  "providers": {
+    "a2agent-chat": {
+      "baseUrl": "https://a2agent.me/v1",
+      "api": "openai",
+      "models": [{ "id": "YOUR_CHAT_MODEL_ID" }]
+    },
+    "a2agent-responses": {
+      "baseUrl": "https://a2agent.me/v1",
+      "api": "openai-responses",
+      "models": [{ "id": "YOUR_RESPONSES_MODEL_ID" }]
+    },
+    "a2agent-messages": {
+      "baseUrl": "https://a2agent.me",
+      "api": "anthropic",
+      "models": [{ "id": "YOUR_MESSAGES_MODEL_ID" }]
+    }
+  }
+}
+```
+
+Use model IDs available to your key and supported by the chosen API format.
+The Anthropic entry uses the site root because zot appends `/v1/messages`;
+the other entries use `/v1`. Set the corresponding
+`A2AGENT_CHAT_API_KEY`, `A2AGENT_RESPONSES_API_KEY`, or
+`A2AGENT_MESSAGES_API_KEY` environment variable to an A2Agent key before
+selecting that entry. The same key can be used for multiple entries if its
+group permits the models and formats. This example describes configuration;
+it does not imply that every model supports every format or tool calling.
+
 Custom providers are first-class: they appear in `--list-models`, `/model`, and
 `/login`. `models.json` never stores secrets. If the endpoint requires a key,
 supply it through `/login`, `--api-key`, or a derived environment variable in
