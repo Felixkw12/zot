@@ -2370,12 +2370,7 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		}
 		if !active && len(queued) == 0 && !liveTasks(snap, conversationID) {
 			if did {
-				// Report the settled chain from its generation task.
-				if t, ok, _ := read[Task](snap, taskKey(lastGeneration(snap, conversationID))); ok {
-					if run, ok := settledRun(t); ok && run.ID == last.ID {
-						last = run
-					}
-				}
+				last = settledStepRun(snap, conversationID, last)
 			}
 			return last, did, nil
 		}
@@ -2430,6 +2425,17 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 			return last, true, err
 		}
 	}
+}
+
+// settledStepRun reports the latest committed completion when Step has driven
+// work to idle. A continuation may finish between observations of its chain.
+func settledStepRun(snap storage.Snapshot, conversationID string, last Run) Run {
+	if t, ok, _ := read[Task](snap, taskKey(lastGeneration(snap, conversationID))); ok {
+		if run, ok := settledRun(t); ok {
+			return run
+		}
+	}
+	return last
 }
 
 // lastGeneration returns the newest generation task of a conversation.

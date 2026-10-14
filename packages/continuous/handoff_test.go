@@ -70,6 +70,40 @@ func TestHandoffSchedulesExactlyOneContinuation(t *testing.T) {
 	}
 }
 
+// A fast handoff continuation can complete without Step ever observing its
+// active chain. The last observed run must not hide the newer settled result.
+func TestSettledStepRunIncludesUnobservedContinuation(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t, newMemoryStore(), []scriptStep{
+		{calls: []provider.ToolCallBlock{call("handoff", "handoff", `{"note":"state","continue":"finish"}`)}},
+		{text: "continued"},
+	}, HandoffTool{})
+	defer h.r.Close()
+	c := h.root(t)
+	if _, err := h.r.Submit(ctx, c.ID, "actor", "", "start"); err != nil {
+		t.Fatal(err)
+	}
+	observed, ok, err := h.r.Run(ctx, c.ID)
+	if err != nil || !ok || observed.Phase != "request" {
+		t.Fatalf("initial run: %+v %v", observed, err)
+	}
+	if _, _, err := h.svc.Step(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := h.r.store.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, ok, err := runView(snap, c.ID)
+	if err != nil || !ok || latest.ID == observed.ID || latest.Outcome != "completed" {
+		t.Fatalf("continuation run: %+v %v", latest, err)
+	}
+	got := settledStepRun(snap, c.ID, observed)
+	if got.ID != latest.ID || got.Phase != "done" || got.Outcome != "completed" {
+		t.Fatalf("returned stale observed run: %+v, want %+v", got, latest)
+	}
+}
+
 // Search scans the full history including entries before the reset, filters
 // by type and text, follows fork ancestry on request, and pages by cursor.
 func TestSearchHistoryAcrossResetsAndForks(t *testing.T) {
