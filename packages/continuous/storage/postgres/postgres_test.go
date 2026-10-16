@@ -657,3 +657,24 @@ func waitFor(t *testing.T, ok func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestFsyncCheck runs against ZOT_TEST_POSTGRES_NOFSYNC_DSN, a disposable
+// server started with fsync=off. Open refuses it unless the operator opts
+// in with TrustRemoteDurability.
+func TestFsyncCheck(t *testing.T) {
+	dsn := os.Getenv("ZOT_TEST_POSTGRES_NOFSYNC_DSN")
+	if dsn == "" {
+		t.Skip("ZOT_TEST_POSTGRES_NOFSYNC_DSN not set")
+	}
+	name := uniqueName(t)
+	_, err := Open(context.Background(), dsn, Options{StoreName: name, Create: true})
+	if err == nil || !strings.Contains(err.Error(), "fsync=on") {
+		t.Fatalf("fsync=off server accepted: %v", err)
+	}
+	s, err := Open(context.Background(), dsn, Options{StoreName: name, Create: true, TrustRemoteDurability: true})
+	if err != nil {
+		t.Fatalf("trusted open: %v", err)
+	}
+	defer s.Close()
+	commit(t, s, put("k", `1`))
+}

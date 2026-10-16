@@ -1346,6 +1346,7 @@ zot continuous attach "summarize the README" \
 | `ZOT_CONTINUOUS_POSTGRES_DSN` | Connection string when no file is given. It never selects the backend by itself |
 | `--postgres-operation-timeout <d>` | Bound on each admitted database operation, 1s to 15m, default 15s |
 | `--state-dir <dir>` | Required for `serve`: local socket, web token, `state.lock`, and `store.json` |
+| `--postgres-trust-remote-durability` | Accept a server that reports `fsync=off`, see below |
 
 `--store` stays a local directory and cannot be combined with PostgreSQL.
 The store name identifies database authority, `--workspace` a root
@@ -1415,6 +1416,18 @@ zot refuses a server that is in recovery, read-only, outside versions 15 to
 audit disks, caches, or cloud guarantees. With asynchronous replication a
 failover can lose acknowledged commits, and synchronous replication only helps
 when the operator configures it.
+
+Some managed services report `fsync=off` because their durability does not
+come from local disk flushes. Neon, for example, acknowledges a commit once
+its write-ahead log is replicated to a separate storage service. Pass
+`--postgres-trust-remote-durability` to accept such a server. It skips only
+the `fsync` check, prints a warning on every open, and leaves all other
+checks in place. zot cannot tell such a service apart from a self-hosted
+server with `fsync` switched off, where a crash can lose acknowledged
+commits, so the flag means trusting your provider's durability guarantee.
+Neon's `-pooler` endpoints are transaction poolers and stay unsupported: use
+the direct endpoint. A suspended Neon compute drops the connection, which
+stops the store like any other lost session.
 
 zot never creates databases, roles, grants, or extensions. It uses the fixed
 schema `zot_continuous` (layout version 1). Creating it requires `CREATE` on

@@ -33,6 +33,9 @@ func TestContinuousPostgresTargetParsing(t *testing.T) {
 		{"timeout high", append([]string{"hi", "--postgres-operation-timeout", "16m"}, pg...), "1s to 15m"},
 		{"empty value", []string{"hi", "--backend", "postgres", "--store-name", ""}, "requires a value"},
 		{"local unchanged", []string{"hi", "--store", "x"}, ""},
+		{"trust durability ok", append([]string{"hi", "--postgres-trust-remote-durability"}, pg...), ""},
+		{"trust durability local", []string{"hi", "--store", "x", "--postgres-trust-remote-durability"}, "requires --backend postgres"},
+		{"trust durability twice", append([]string{"hi", "--postgres-trust-remote-durability", "--postgres-trust-remote-durability"}, pg...), "duplicate"},
 	}
 	for _, c := range cases {
 		opts, err := parseContinuousRunArgs(c.args)
@@ -74,6 +77,9 @@ func TestContinuousPostgresServeParsing(t *testing.T) {
 
 func TestContinuousPostgresCommandSupport(t *testing.T) {
 	pg := []string{"--backend", "postgres", "--store-name", "main"}
+	if opts, err := parseContinuousOptions(append([]string{"status", "--postgres-trust-remote-durability"}, pg...)); err != nil || !opts.target.trustRemoteDurability {
+		t.Errorf("status with trust flag: %v", err)
+	}
 	for _, cmd := range [][]string{{"status"}, {"conversations"}, {"check-state"}, {"recover", "--dry-run"}, {"export", "id"}, {"import", "f"}, {"retain", "--dedup", "1h"}, {"migrate-runs"}} {
 		if _, err := parseContinuousOptions(append(cmd, pg...)); err != nil {
 			t.Errorf("%v: %v", cmd, err)

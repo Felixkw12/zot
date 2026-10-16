@@ -128,7 +128,7 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 	if s.writer, err = pgx.ConnectConfig(openCtx, cfg); err != nil {
 		return nil, wrap("connect", safeError("connect writer", err))
 	}
-	if err := checkServer(openCtx, s.writer); err != nil {
+	if err := checkServer(openCtx, s.writer, opts.TrustRemoteDurability); err != nil {
 		return nil, wrap("connect", err)
 	}
 	var revision, epoch int64
@@ -145,7 +145,7 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 	if s.reader, err = pgx.ConnectConfig(openCtx, cfg); err != nil {
 		return nil, wrap("connect", safeError("connect reader", err))
 	}
-	if err := checkServer(openCtx, s.reader); err != nil {
+	if err := checkServer(openCtx, s.reader, opts.TrustRemoteDurability); err != nil {
 		return nil, wrap("connect", err)
 	}
 	var readerUUID string
@@ -179,8 +179,9 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 }
 
 // checkServer refuses unsupported versions, standbys, read-only sessions,
-// and servers with fsync disabled.
-func checkServer(ctx context.Context, conn *pgx.Conn) error {
+// and servers with fsync disabled. trustDurability skips only the fsync
+// check, on explicit operator request.
+func checkServer(ctx context.Context, conn *pgx.Conn, trustDurability bool) error {
 	var version int
 	var recovery bool
 	var readOnly, fsync string
@@ -195,8 +196,8 @@ func checkServer(ctx context.Context, conn *pgx.Conn) error {
 		return errors.New("continuous postgres requires a primary server, the endpoint is in recovery")
 	case readOnly != "off":
 		return errors.New("continuous postgres requires a read-write session")
-	case fsync != "on":
-		return errors.New("continuous postgres requires fsync=on")
+	case fsync != "on" && !trustDurability:
+		return errors.New("continuous postgres requires fsync=on (for a managed service with replicated remote storage such as Neon, see --postgres-trust-remote-durability)")
 	}
 	return nil
 }

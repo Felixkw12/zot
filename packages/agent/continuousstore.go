@@ -48,6 +48,8 @@ type continuousTarget struct {
 
 	// durabilitySet records an explicit --durability.
 	durabilitySet bool
+	// trustRemoteDurability skips the server fsync=on check.
+	trustRemoteDurability bool
 }
 
 func (t continuousTarget) postgres() bool { return t.backend == backendPostgres }
@@ -65,6 +67,14 @@ func (t continuousTarget) label() string {
 // Duplicates and empty values are errors in every parser.
 func (t *continuousTarget) storageFlag(args []string, i int, seen map[string]bool) (next int, ok bool, err error) {
 	arg := args[i]
+	if arg == "--postgres-trust-remote-durability" {
+		if seen[arg] {
+			return i, true, fmt.Errorf("duplicate continuous flag: %s", arg)
+		}
+		seen[arg] = true
+		t.trustRemoteDurability = true
+		return i, true, nil
+	}
 	switch arg {
 	case "--store", "--backend", "--durability", "--store-name", "--postgres-dsn-file", "--postgres-operation-timeout", "--state-dir":
 	default:
@@ -129,7 +139,7 @@ func (t *continuousTarget) validate(command string, serve bool) error {
 		t.durability = storage.Strict
 		return nil
 	}
-	for flag, set := range map[string]bool{"--store-name": t.storeName != "", "--postgres-dsn-file": t.dsnFile != "", "--postgres-operation-timeout": t.operationTimeout != 0, "--state-dir": t.stateDir != ""} {
+	for flag, set := range map[string]bool{"--store-name": t.storeName != "", "--postgres-dsn-file": t.dsnFile != "", "--postgres-operation-timeout": t.operationTimeout != 0, "--state-dir": t.stateDir != "", "--postgres-trust-remote-durability": t.trustRemoteDurability} {
 		if set {
 			return fmt.Errorf("%s requires --backend postgres", flag)
 		}
@@ -193,7 +203,10 @@ func openContinuousTarget(ctx context.Context, t continuousTarget, create bool) 
 	if err != nil {
 		return nil, err
 	}
-	s, err := postgres.Open(ctx, dsn, postgres.Options{StoreName: t.storeName, Create: create, Durability: storage.Strict, OperationTimeout: t.operationTimeout})
+	if t.trustRemoteDurability {
+		fmt.Fprintln(os.Stderr, "zot continuous: --postgres-trust-remote-durability: the server fsync check is skipped. Commit durability now depends on the database provider, which zot cannot verify.")
+	}
+	s, err := postgres.Open(ctx, dsn, postgres.Options{StoreName: t.storeName, Create: create, Durability: storage.Strict, OperationTimeout: t.operationTimeout, TrustRemoteDurability: t.trustRemoteDurability})
 	if err != nil {
 		return nil, err
 	}

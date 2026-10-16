@@ -66,6 +66,11 @@ type Options struct {
 	HeartbeatTimeout time.Duration
 	// CloseTimeout bounds each cleanup step of Close. Default 5s.
 	CloseTimeout time.Duration
+	// TrustRemoteDurability skips only the fsync=on requirement, for
+	// services such as Neon whose durability comes from replicated remote
+	// storage rather than local fsync. zot cannot verify that claim: it
+	// trusts the operator and the provider. Every other server check stays.
+	TrustRemoteDurability bool
 
 	// admissionWait bounds waiting for a connection gate. Tests shorten it.
 	admissionWait time.Duration

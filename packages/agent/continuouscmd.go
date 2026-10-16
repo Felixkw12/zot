@@ -73,6 +73,10 @@ Options:
   --postgres-operation-timeout  Bound on admitted database work, 1s-15m, default 15s. Exceeding it,
                                losing the connection, or an unknown commit outcome stops the store.
                                Reopen explicitly. Nothing is retried or reconnected.
+  --postgres-trust-remote-durability
+                               Accept a server reporting fsync=off, for managed services such as Neon
+                               whose durability comes from replicated remote storage. zot cannot
+                               verify this and trusts the provider. All other server checks remain.
   --help                       Show this help.
 
 run executes queued work for the workspace root conversation with the host's ordinary
@@ -243,7 +247,7 @@ func parseContinuousOptions(args []string) (continuousOptions, error) {
 			continue
 		}
 		switch arg {
-		case "--store-name", "--postgres-dsn-file", "--postgres-operation-timeout", "--state-dir":
+		case "--store-name", "--postgres-dsn-file", "--postgres-operation-timeout", "--state-dir", "--postgres-trust-remote-durability":
 			if opts.command == "verify-backup" {
 				return opts, fmt.Errorf("%s does not apply to verify-backup", arg)
 			}
