@@ -223,7 +223,7 @@ func documentAsOf(snap storage.Snapshot, kind, conversationID string, entrySeq u
 	var best Document
 	found := false
 	for {
-		page, err := snap.Page(prefix, after, 200)
+		page, err := storage.Page(context.Background(), snap, prefix, after, 200)
 		if err != nil {
 			return Document{}, false, err
 		}

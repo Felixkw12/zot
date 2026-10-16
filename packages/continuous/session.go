@@ -82,7 +82,9 @@ func (r *Runtime) ImportSession(ctx context.Context, source io.Reader) (Conversa
 		if ok {
 			return conversation(snap, existing)
 		}
-		if _, ok := snap.Get("conversation/" + id); ok {
+		if ok, err := exists(snap, "conversation/"+id); err != nil {
+			return Conversation{}, err
+		} else if ok {
 			return Conversation{}, ErrSessionConflict
 		}
 		created := meta.Started
@@ -334,7 +336,11 @@ func (r *Runtime) ExportSession(ctx context.Context, id string, out io.Writer) e
 			steered[e.SubmissionID] = true
 		}
 		if e.Type == "user" && e.SubmissionID != "" {
-			if sub, ok, _ := read[Submission](snap, "submission/"+e.SubmissionID); ok && sub.State == "withdrawn" {
+			sub, ok, err := read[Submission](snap, "submission/"+e.SubmissionID)
+			if isReadFailure(err) {
+				return err
+			}
+			if ok && sub.State == "withdrawn" {
 				// Withdrawn inputs were never sent; the projection omits them.
 				steered[e.SubmissionID] = true
 			}

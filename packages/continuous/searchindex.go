@@ -56,7 +56,7 @@ func (idx *SearchIndex) Rebuild(ctx context.Context, r *Runtime) error {
 	fresh := &SearchIndex{postings: map[string]map[string][]uint64{}}
 	after := ""
 	for {
-		page, err := snap.Page("entry/", after, 500)
+		page, err := storage.Page(context.Background(), snap, "entry/", after, 500)
 		if err != nil {
 			return err
 		}

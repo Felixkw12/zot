@@ -44,7 +44,7 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			rows, err := snap.Page(prefix, after, 100)
+			rows, err := storage.Page(context.Background(), snap, prefix, after, 100)
 			if err != nil {
 				return err
 			}
@@ -206,7 +206,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			if owner.ID == c.ID || c.Owner.ID == "" || owner.Created.After(c.Created) {
 				return bad("conversation owner reference")
 			}
-			if _, ok := snap.Get(ownedConversationKey(c.Owner.ID, c.ID)); !ok {
+			if ok, err := exists(snap, ownedConversationKey(c.Owner.ID, c.ID)); err != nil {
+				return err
+			} else if !ok {
 				return bad("owned conversation without index")
 			}
 			// Ownership chains terminate.
@@ -364,7 +366,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				if e.SubmissionID != "" || json.Unmarshal(e.LegacyRow, &rowType) != nil || rowType.Type == "" || e.Type != "legacy_"+rowType.Type {
 					return bad("invalid legacy entry")
 				}
-				if _, ok := snap.Get("legacy/session/" + c.ID); !ok {
+				if ok, err := exists(snap, "legacy/session/"+c.ID); err != nil {
+					return err
+				} else if !ok {
 					return bad("missing import provenance")
 				}
 			default:
@@ -497,7 +501,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				return err
 			}
 			for _, h := range []string{p.SystemHash, p.ToolsHash} {
-				if _, ok := snap.Get(promptSectionKey(h)); !ok {
+				if ok, err := exists(snap, promptSectionKey(h)); err != nil {
+					return err
+				} else if !ok {
 					return bad("prompt record without its section")
 				}
 			}
@@ -540,7 +546,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			if _, err := getConversation(a.ConversationID); err != nil {
 				return err
 			}
-			if _, ok := snap.Get(approvalConversationKey(a.ConversationID, a.ID)); !ok {
+			if ok, err := exists(snap, approvalConversationKey(a.ConversationID, a.ID)); err != nil {
+				return err
+			} else if !ok {
 				return bad("approval without conversation index")
 			}
 			switch a.State {
@@ -580,11 +588,15 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 			if _, err := getConversation(t.ConversationID); err != nil {
 				return err
 			}
-			if _, ok := snap.Get(taskConversationKey(t.ConversationID, t.ID)); !ok {
+			if ok, err := exists(snap, taskConversationKey(t.ConversationID, t.ID)); err != nil {
+				return err
+			} else if !ok {
 				return bad("task without conversation index")
 			}
 			for _, id := range t.Linked {
-				if _, ok := snap.Get(taskKey(id)); !ok || id == t.ID {
+				if ok, err := exists(snap, taskKey(id)); err != nil {
+					return err
+				} else if !ok || id == t.ID {
 					return bad("task links a missing task")
 				}
 			}
@@ -621,7 +633,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 					return bad("waiting task must have exactly one of dependencies, a timer, or an approval")
 				}
 				if t.WaitApproval != "" {
-					if _, ok := snap.Get(approvalKey(t.WaitApproval)); !ok {
+					if ok, err := exists(snap, approvalKey(t.WaitApproval)); err != nil {
+						return err
+					} else if !ok {
 						return bad("task waits on a missing approval")
 					}
 				}
@@ -632,7 +646,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 					if dep == t.ID {
 						return bad("task waits on itself")
 					}
-					if _, ok := snap.Get(taskKey(dep)); !ok {
+					if ok, err := exists(snap, taskKey(dep)); err != nil {
+						return err
+					} else if !ok {
 						return bad("task waits on missing task")
 					}
 				}
@@ -658,7 +674,9 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				owner = o.Owner
 			}
 			if t.Owner != "" {
-				if _, ok := snap.Get(taskOwnerKey(t.Owner, t.ID)); !ok {
+				if ok, err := exists(snap, taskOwnerKey(t.Owner, t.ID)); err != nil {
+					return err
+				} else if !ok {
 					return bad("task without owner index")
 				}
 			}
@@ -840,7 +858,10 @@ func (r *Runtime) CheckIntegrity(ctx context.Context) (Integrity, error) {
 				return bad("invalid import provenance")
 			}
 			var target string
-			b, ok := snap.Get("import/session/" + info.Digest)
+			b, ok, err := storage.Get(ctx, snap, "import/session/"+info.Digest)
+			if err != nil {
+				return err
+			}
 			if !ok || json.Unmarshal(b, &target) != nil || target != id {
 				return bad("missing import reference")
 			}

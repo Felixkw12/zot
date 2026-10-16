@@ -42,7 +42,7 @@ func (r *Runtime) Conversations(ctx context.Context, after string, limit int) ([
 	if after != "" {
 		cursor = "conversation/" + after
 	}
-	rows, err := snap.Page("conversation/", cursor, limit)
+	rows, err := storage.Page(context.Background(), snap, "conversation/", cursor, limit)
 	if err != nil {
 		return nil, 0, err
 	}

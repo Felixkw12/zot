@@ -47,7 +47,7 @@ func (s *nestedCrashStore) Commit(ctx context.Context, m storage.Mutation) (stor
 }
 
 func TestNestedCrashMatrix(t *testing.T) {
-	for _, backend := range []string{"memory", "journal", "sqlite"} {
+	for _, backend := range append([]string{"memory"}, crashBackends()...) {
 		for _, boundary := range []string{"intent", "effect", "result"} {
 			for _, after := range []bool{false, true} {
 				name := backend + "/" + boundary + "/before"
@@ -67,6 +67,8 @@ func TestNestedCrashMatrix(t *testing.T) {
 						store, err = journal.Open(ctx, dir, journal.Options{Durability: storage.Process})
 					case "sqlite":
 						store, err = sqlite.Open(ctx, dir, sqlite.Options{Durability: storage.Process})
+					case "postgres":
+						store, err = openCrashStore(ctx, backend, dir)
 					}
 					if err != nil {
 						t.Fatal(err)

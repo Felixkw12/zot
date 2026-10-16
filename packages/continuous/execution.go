@@ -198,14 +198,21 @@ func runView(snap storage.Snapshot, conversationID string) (Run, bool, error) {
 	if chain, ok, err := read[Chain](snap, chainKey(conversationID)); err != nil {
 		return Run{}, false, err
 	} else if ok {
-		return chainRun(snap, chain), true, nil
+		run, err := chainRun(snap, chain)
+		return run, err == nil, err
 	}
 	if legacy, ok, err := read[Run](snap, runKey(conversationID)); err != nil {
 		return Run{}, false, err
 	} else if ok && legacy.Phase != "done" {
 		return legacy, true, nil
 	}
-	if t, ok, _ := read[Task](snap, taskKey(lastGeneration(snap, conversationID))); ok {
+	last, err := lastGeneration(snap, conversationID)
+	if err != nil {
+		return Run{}, false, err
+	}
+	if t, ok, err := read[Task](snap, taskKey(last)); err != nil && !errors.Is(err, storage.ErrCorrupt) {
+		return Run{}, false, err
+	} else if ok {
 		if run, ok := settledRun(t); ok {
 			return run, true, nil
 		}
@@ -244,7 +251,7 @@ func (s *Service) CompactionMetrics(ctx context.Context) (CompactionMetrics, err
 	if err != nil {
 		return CompactionMetrics{}, err
 	}
-	return compactionMetrics(snap), nil
+	return compactionMetrics(snap)
 }
 
 // Step answers the queued work of one conversation, and of the
@@ -253,8 +260,14 @@ func (s *Service) CompactionMetrics(ctx context.Context) (CompactionMetrics, err
 // earlier executor. It returns the run shape of the last chain and whether
 // work was done. A conversation blocked by an unmigratable run returns
 // ErrMigrationBlocked; Runtime.Abort settles it.
+//
+// A terminal store failure cancels the step's invocations before they are
+// joined and is returned in place of the resulting cancellation.
 func (s *Service) Step(ctx context.Context, conversationID string) (Run, bool, error) {
-	return s.stepTasks(ctx, conversationID)
+	ctx, stop := storeLifetime(ctx, s.r.store)
+	defer stop()
+	run, did, err := s.stepTasks(ctx, conversationID)
+	return run, did, preferStoreFailure(s.r.store, err)
 }
 
 // prepareAgent builds a fresh agent through the host's Engine, replaces its
@@ -308,7 +321,7 @@ func prepareAgent(ctx context.Context, engine Engine, snap storage.Snapshot, c C
 // ModelContext places it after the tool results; the admission entry stays
 // for history and is not sent twice.
 func claimSteeringOps(snap storage.Snapshot, c *Conversation, run *Run) ([]storage.Operation, error) {
-	queue, err := snap.Page("queue/"+c.ID+"/", "", 100)
+	queue, err := storage.Page(context.Background(), snap, "queue/"+c.ID+"/", "", 100)
 	if err != nil {
 		return nil, err
 	}
@@ -515,17 +528,20 @@ func executeCall(ctx context.Context, agent *core.Agent, identity ToolCallIdenti
 	})
 }
 
-func settleOps(snap storage.Snapshot, submissions []string, state string) []storage.Operation {
+func settleOps(snap storage.Snapshot, submissions []string, state string) ([]storage.Operation, error) {
 	var ops []storage.Operation
 	for _, id := range submissions {
 		sub, ok, err := read[Submission](snap, "submission/"+id)
+		if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+			return nil, err
+		}
 		if err != nil || !ok {
 			continue
 		}
 		sub.State = state
 		ops = append(ops, record("submission/"+id, sub))
 	}
-	return ops
+	return ops, nil
 }
 
 func sameJSON(a, b any) bool {

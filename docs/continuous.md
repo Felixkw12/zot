@@ -9,7 +9,8 @@ repeat an effect it cannot prove did not happen.
 
 It is **experimental**. The journal format, Go APIs, and host protocol are
 provisional. Ordinary zot workflows are unchanged. Everything is pure Go with no
-new dependencies.
+CGO or native client library. The optional [PostgreSQL backend](#postgresql-backend)
+links the pure Go `github.com/jackc/pgx/v5` driver.
 
 ## Quick start
 
@@ -407,6 +408,7 @@ zot continuous abort <conversation-id|task-id> [--include-background] --store ./
 ```
 
 Commands work without provider credentials and require an explicit store path,
+or `--backend postgres --store-name <name>` (see [PostgreSQL backend](#postgresql-backend)),
 except `verify-backup`, which takes an archive path and rejects `--store`.
 Import may create the store if its parent exists. Restore and `migrate` require
 a new directory with an existing parent. Other store commands require an
@@ -1313,6 +1315,230 @@ crash matrices.
 The CLI picks the backend of an existing store from its files; `--backend` is
 accepted only where a store may be created (`run`, `serve`, `import`) and
 must match an existing store.
+
+## PostgreSQL backend
+
+An optional backend keeps one logical store in an external PostgreSQL 15 to
+18 server. zot connects with the pure Go pgx driver, so the binary still needs
+no CGO or native client library. PostgreSQL is never embedded, detected, or
+defaulted: every command selects it explicitly.
+
+```sh
+zot continuous serve --backend postgres --store-name main \
+  --postgres-dsn-file /private/zot-postgres.dsn \
+  --state-dir ./continuous-host --tools read,glob
+
+zot continuous run "summarize the README" --backend postgres \
+  --store-name main --postgres-dsn-file /private/zot-postgres.dsn --tools read,glob
+
+zot continuous status --backend postgres --store-name main \
+  --postgres-dsn-file /private/zot-postgres.dsn
+
+zot continuous attach "summarize the README" \
+  --socket ./continuous-host/host.sock --workspace main
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--backend postgres` | Select the PostgreSQL backend |
+| `--store-name <name>` | Required logical store, `[A-Za-z0-9][A-Za-z0-9._-]*`, at most 128 characters, case-sensitive |
+| `--postgres-dsn-file <path>` | Connection string file |
+| `ZOT_CONTINUOUS_POSTGRES_DSN` | Connection string when no file is given. It never selects the backend by itself |
+| `--postgres-operation-timeout <d>` | Bound on each admitted database operation, 1s to 15m, default 15s |
+| `--state-dir <dir>` | Required for `serve`: local socket, web token, `state.lock`, and `store.json` |
+
+`--store` stays a local directory and cannot be combined with PostgreSQL.
+The store name identifies database authority, `--workspace` a root
+conversation inside it. Only strict durability exists, so `--durability
+process` is refused.
+
+### Commands
+
+`run` with a prompt, `serve`, and `import` create the named store when it
+is absent. `run --resume` and every inspection and administration command
+(`status`, `conversations`, `check-state`, `recover --dry-run`, `abort`,
+`usage`, `tasks`, `inspect`, `approvals`, `decide`, `budget`, `search`,
+`prompts`, `withdraw`, `reorder`, `outbox`, `retain`, `migrate-runs`,
+`export`) require an existing store and never create one. `backup`,
+`restore`, `verify`, `format`, and `migrate` are journal-only and are refused
+before credentials are read. `verify-backup` takes no PostgreSQL flags.
+`attach` and `zot --continuous` are unchanged: they talk to the host, never
+to the database.
+
+Direct commands take writer ownership and append a `writer.acquire` commit,
+exactly like the local backends. While `serve` owns a store they report
+`continuous store already has a writer`. Use the host protocol instead.
+`check-state` checks runtime invariants. It is not database backup
+verification or tamper detection.
+
+### Credentials and transport
+
+The DSN file must be a regular, non-symlink UTF-8 file of at most 64 KiB with
+one URI or keyword connection string. One trailing newline is removed. On
+Unix it must be owned by the current user with no group or other permission
+bits (`chmod 600`). On Windows it must be owned by the current user with an
+access list granting only that user and SYSTEM. An explicit file that fails
+any check is an error, never a reason to fall back to the environment. The
+environment variable gets the same content checks, but may be visible to
+other processes of the same user. Connection strings never appear in logs,
+records, manifests, or protocol responses.
+
+Accepted keys: `host`, `port`, `database`/`dbname`, `user`, `password`,
+`passfile`, `service`, `servicefile`, `connect_timeout`, `sslmode`,
+`sslrootcert`, `sslcert`, `sslkey`, `sslpassword`, `sslsni`,
+`sslnegotiation`, `target_session_attrs`, `channel_binding`, `require_auth`.
+Standard `PG*` variables, passfiles, and service files remain trusted
+operator input. zot validates the resulting effective configuration. Server
+session parameters are fixed (`application_name=zot-continuous`,
+`search_path=pg_catalog`, `synchronous_commit=on`), so `PGOPTIONS` is not
+forwarded.
+
+Exactly one endpoint is accepted:
+
+- TCP with `sslmode=verify-full`: certificate and hostname verification,
+  TLS 1.2 or newer.
+- Plaintext only to a numeric loopback address (`127.0.0.1`, `::1`).
+  `localhost` is a hostname and is refused.
+- A Unix-domain socket directory on Unix.
+
+Multiple hosts, `prefer`/`allow` fallbacks (including the libpq default),
+`require`, and `verify-ca` are refused. Read replicas and transaction or
+statement pooling proxies are unsupported because the writer lock is a
+session advisory lock. A direct connection or a session-affine proxy is
+required.
+
+### Server and permissions
+
+zot refuses a server that is in recovery, read-only, outside versions 15 to
+18, or running with `fsync=off`. Every transaction uses
+`synchronous_commit=on`. This trusts the server's commit barrier. It does not
+audit disks, caches, or cloud guarantees. With asynchronous replication a
+failover can lose acknowledged commits, and synchronous replication only helps
+when the operator configures it.
+
+zot never creates databases, roles, grants, or extensions. It uses the fixed
+schema `zot_continuous` (layout version 1). Creating it requires `CREATE` on
+the database. A restricted runtime role on a provisioned schema needs
+`USAGE` on the schema, `SELECT` on all four tables, `INSERT` on `commits` and
+`records`, `UPDATE` on `stores`, and for store creation `INSERT` on `stores`
+plus `USAGE` on its identity sequence. Store names separate logical stores.
+They are not a security boundary against a role that can edit the tables. Use
+separate databases or roles for untrusted tenants.
+
+Any other layout version, or a schema whose tables, columns, indexes, or
+constraints do not match, is refused. There is no automatic migration.
+
+### Ownership and failure behavior
+
+Each open store holds a session advisory lock on a dedicated writer
+connection and reads through a second connection. A second writer gets
+`ErrLocked` immediately. zot never waits for, steals, or terminates another
+session. Every open commits a higher writer epoch, and every commit checks the
+persisted revision and epoch.
+
+The store never reconnects or retries a mutation. A lost connection, an
+operation timeout, a heartbeat failure (every 5 seconds the writer verifies
+its lock and the persisted counters), or a commit failure terminates the
+store, cancels host execution before tasks are joined, and is reported as the
+cause instead of a clean shutdown. A COMMIT whose reply was lost may still
+have been durable, so it is reported as `continuous commit outcome unknown`,
+never retried, and resolved by reopening explicitly. Request IDs deduplicate
+admission after recovery. They do not make external tool effects
+exactly-once.
+
+Client cancellation bounds only waiting for a database connection (at most
+15 seconds). Work already sent to the database runs to completion or to the
+operation timeout, so a disconnecting client never destroys the writer
+session. A busy writer can delay a heartbeat, so there is no fixed failover
+detection deadline.
+
+Writer fencing protects database writes, not processes. After a network
+partition, stop or fence the old host and its tool processes before starting
+a replacement. There is no automatic takeover.
+
+### Local state directory
+
+`serve` keeps local artifacts in `--state-dir`: `state.lock` (an exclusive
+lock held while serving, so two hosts cannot share one socket), `store.json`
+(the store UUID, written once and never overwritten), `host.sock` (a private
+named pipe on Windows), and `web-token`. Startup refuses a directory bound to
+a different store or holding a journal or SQLite store, and nothing is
+published before the store is open and its identity matches. Use a local
+filesystem. These checks are operational guardrails, not a sandbox against a
+hostile process of the same user.
+
+### Backup, restore, and clones
+
+Use PostgreSQL or managed-service backup tooling. A complete backup preserves
+the schema, store rows and UUIDs, counters, identity sequence, commits, and
+every record version. Workspaces, credentials, extensions, tool outputs, and
+local host state are separate. Restore into an isolated database and run
+`check-state` before executing. A backup can capture an external effect
+between its intent and result commits. Normal recovery keeps that
+uncertainty rather than repeating it.
+
+Advisory locks do not cross clusters. A restored or cloned database is an
+independent authority even with the same UUID and epochs: never run the
+original and a clone against one workspace. After a partition or restore,
+fence the old host, pick the intended primary, open explicitly (a new epoch is
+committed), review `recover --dry-run`, and resolve uncertain effects through
+approvals and recovery. Session import and export are projections, not a
+lossless migration between backends.
+
+### Performance
+
+Records are immutable versions, never physically pruned (retention writes
+tombstones). Point reads use a digest index and are cheap. Prefix pages use a
+512-byte prefix index for selective prefixes, but a broad prefix over a long
+history makes the server select and sort the latest version of every matching
+key on each page. Client memory is bounded by the requested page, not by
+store size, but one `Scan` page of large commits can still use substantial
+memory. Raise `--postgres-operation-timeout` for known heavy workloads.
+Exceeding it still terminates the store.
+
+Measured with `go test -bench . ./packages/continuous/storage/postgres/` on
+an Apple M1 Pro against PostgreSQL 15.8 and 18.6 in local Docker containers
+on tmpfs (loopback, no disk flush cost, so commit latency here is a lower
+bound):
+
+| Operation | PostgreSQL 15.8 | PostgreSQL 18.6 |
+| --- | --- | --- |
+| Commit, 1 operation | 2.0 ms | 2.5 ms |
+| Commit, 50 operations | 4.3 ms | 5.4 ms |
+| Get of a key with 5,000 versions | 0.5 ms | 0.6 ms |
+| Full traversal, pages of 50, 50,000 versions of 1,000 keys | 511 ms | 487 ms |
+| Full traversal of a 20-key prefix in the same store | 0.6 ms | 0.6 ms |
+| Open over 10 commits / 5,000 commits | 38 / 35 ms | 47 / 59 ms |
+
+Open allocates the same (about 220 KB) regardless of history length. The
+broad traversal plan on 18.6 is a bitmap scan of `records_prefix` returning
+all 50,000 versions followed by an in-memory quicksort of about 3.7 MB, for
+every page. A point read on a hot key is an index scan of `records_get`
+taking well under 1 ms on the server. These numbers are not production
+throughput claims.
+
+### Go API
+
+`postgres.Open(ctx, dsn, postgres.Options{StoreName, Create, ...})` returns a
+`*postgres.Store`. Its snapshots implement `storage.ContextSnapshot`. Use
+`storage.Get` and `storage.Page`, which report database errors. The legacy
+`Snapshot.Get` cannot return an error, so a failure there terminates the
+store and reads as absent. `storage.StoreLifecycle` (`Done`, `Err`) reports
+terminal failure. `postgres.ErrStoreNotFound` reports an absent store for
+existing-only opens. A creation-capable Open that fails may still have
+created the schema, the store row, or an acquisition commit.
+
+### Testing
+
+`go test ./...` needs no server. Set `ZOT_TEST_POSTGRES_DSN` to a dedicated,
+disposable database to run the integration tests. They create uniquely named
+stores and never drop databases or schemas. `ZOT_TEST_POSTGRES_REQUIRED=1`
+turns a missing fixture into a failure, as CI does for PostgreSQL 15 and 18.
+With the fixture set, the execution and nested crash matrices also run on
+PostgreSQL. `TestTLSTransport` additionally needs a TLS-enabled server whose
+certificate names `pg.zot.test`: `ZOT_TEST_POSTGRES_TLS_ADDR` (its
+`host:port`), `ZOT_TEST_POSTGRES_TLS_CA`, and `ZOT_TEST_POSTGRES_TLS_OTHER_CA`
+(an unrelated CA for the negative case).
 
 ## Nested tool calls
 

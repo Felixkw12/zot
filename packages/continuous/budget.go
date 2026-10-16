@@ -162,7 +162,7 @@ func budgetStatus(ctx context.Context, snap storage.Snapshot, b Budget, now time
 		if err := ctx.Err(); err != nil {
 			return status, err
 		}
-		page, err := snap.Page(prefix, after, 500)
+		page, err := storage.Page(context.Background(), snap, prefix, after, 500)
 		if err != nil {
 			return status, err
 		}

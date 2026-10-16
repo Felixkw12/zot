@@ -98,7 +98,10 @@ func TestSettledStepRunIncludesUnobservedContinuation(t *testing.T) {
 	if err != nil || !ok || latest.ID == observed.ID || latest.Outcome != "completed" {
 		t.Fatalf("continuation run: %+v %v", latest, err)
 	}
-	got := settledStepRun(snap, c.ID, observed)
+	got, err := settledStepRun(snap, c.ID, observed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.ID != latest.ID || got.Phase != "done" || got.Outcome != "completed" {
 		t.Fatalf("returned stale observed run: %+v, want %+v", got, latest)
 	}

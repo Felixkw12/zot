@@ -11,16 +11,13 @@ import (
 	"strings"
 
 	"github.com/patriceckhart/zot/packages/continuous"
-	"github.com/patriceckhart/zot/packages/continuous/storage/journal"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // continuousRunOptions are the execution-specific flags of `zot continuous run`.
 type continuousRunOptions struct {
-	store      string
-	backend    string
-	durability journal.Options
+	target     continuousTarget
 	workspace  string
 	prompt     string
 	requestID  string
@@ -35,8 +32,19 @@ type continuousRunOptions struct {
 func parseContinuousRunArgs(args []string) (continuousRunOptions, error) {
 	opts := continuousRunOptions{}
 	positionalOnly := false
+	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if !positionalOnly {
+			next, ok, err := opts.target.storageFlag(args, i, seen)
+			if err != nil {
+				return opts, err
+			}
+			if ok {
+				i = next
+				continue
+			}
+		}
 		if positionalOnly || !strings.HasPrefix(arg, "-") {
 			if opts.prompt != "" {
 				return opts, fmt.Errorf("continuous run accepts one prompt")
@@ -56,32 +64,6 @@ func parseContinuousRunArgs(args []string) (continuousRunOptions, error) {
 			return args[i], nil
 		}
 		switch arg {
-		case "--store":
-			v, err := value()
-			if err != nil {
-				return opts, err
-			}
-			opts.store = v
-		case "--durability":
-			v, err := value()
-			if err != nil {
-				return opts, err
-			}
-			switch v {
-			case "strict", "process":
-				opts.durability.Durability = continuousDurability(v)
-			default:
-				return opts, fmt.Errorf("durability must be strict or process")
-			}
-		case "--backend":
-			v, err := value()
-			if err != nil {
-				return opts, err
-			}
-			if !validContinuousBackend(v) {
-				return opts, fmt.Errorf("backend must be journal or sqlite")
-			}
-			opts.backend = v
 		case "--workspace":
 			v, err := value()
 			if err != nil {
@@ -119,8 +101,8 @@ func parseContinuousRunArgs(args []string) (continuousRunOptions, error) {
 			}
 		}
 	}
-	if opts.store == "" {
-		return opts, fmt.Errorf("continuous run requires --store")
+	if err := opts.target.validate("run", false); err != nil {
+		return opts, err
 	}
 	if opts.prompt == "" && !opts.resumeOnly {
 		return opts, fmt.Errorf("continuous run requires a prompt or --resume")
@@ -166,7 +148,8 @@ func runContinuousRun(ctx context.Context, args []string, out io.Writer) (retErr
 	}
 	extMgr, stopExt := setupNonInteractiveExtensions(ctx, hostArgs, &r, "continuous")
 	defer stopExt()
-	store, err := openContinuousStore(ctx, opts.store, opts.backend, opts.durability.Durability)
+	// A prompt may create a PostgreSQL store; --resume never creates one.
+	store, err := openContinuousTarget(ctx, opts.target, !opts.resumeOnly)
 	if err != nil {
 		return err
 	}

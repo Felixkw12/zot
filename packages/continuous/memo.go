@@ -191,7 +191,7 @@ func (r *Runtime) PromptRecords(ctx context.Context, conversationID string, limi
 	if err != nil {
 		return nil, err
 	}
-	rows, err := snap.Page("prompt/"+conversationID+"/", "", limit)
+	rows, err := storage.Page(context.Background(), snap, "prompt/"+conversationID+"/", "", limit)
 	if err != nil {
 		return nil, err
 	}

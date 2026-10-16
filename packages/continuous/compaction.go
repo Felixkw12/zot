@@ -213,7 +213,9 @@ func (r *Runtime) summarize(ctx context.Context, engine Engine, conversationID, 
 	} else if ok && run.Phase != "done" && reason == "manual" {
 		return nil, ErrBusy
 	}
-	if _, ok := snap.Get(chainKey(conversationID)); ok && reason == "manual" {
+	if ok, err := exists(snap, chainKey(conversationID)); err != nil {
+		return nil, err
+	} else if ok && reason == "manual" {
 		return nil, ErrBusy
 	}
 	head, err := selectCut(ctx, snap, conversationID, c.EntrySequence, keepTokens)
@@ -396,9 +398,9 @@ type CompactionMetrics struct {
 // tasks: started counts every task, finished the terminal ones, running the
 // live ones, pending finished background summaries not yet published, and
 // stale the ones discarded at publication.
-func compactionMetrics(snap storage.Snapshot) CompactionMetrics {
+func compactionMetrics(snap storage.Snapshot) (CompactionMetrics, error) {
 	var m CompactionMetrics
-	_ = pageAll(snap, "task/", func(row storage.Record) error {
+	if err := pageAll(snap, "task/", func(row storage.Record) error {
 		var t Task
 		if json.Unmarshal(row.Value, &t) != nil || t.Kind != TaskKindCompaction {
 			return nil
@@ -410,19 +412,31 @@ func compactionMetrics(snap storage.Snapshot) CompactionMetrics {
 			m.Running++
 		}
 		return nil
-	})
-	_ = pageAll(snap, "bgcompaction/", func(row storage.Record) error {
+	}); err != nil {
+		return m, err
+	}
+	if err := pageAll(snap, "bgcompaction/", func(row storage.Record) error {
 		var id string
 		if json.Unmarshal(row.Value, &id) != nil {
 			return nil
 		}
-		if t, ok, _ := read[Task](snap, taskKey(id)); ok && t.State == "terminal" {
+		t, ok, err := read[Task](snap, taskKey(id))
+		if isReadFailure(err) {
+			return err
+		}
+		if ok && t.State == "terminal" {
 			m.Pending++
 		}
 		return nil
-	})
-	if stats, ok, _ := read[CompactionMetrics](snap, compactionStatsKey); ok {
+	}); err != nil {
+		return m, err
+	}
+	stats, ok, err := read[CompactionMetrics](snap, compactionStatsKey)
+	if isReadFailure(err) {
+		return m, err
+	}
+	if ok {
 		m.Stale = stats.Stale
 	}
-	return m
+	return m, nil
 }

@@ -119,7 +119,7 @@ func (r *Runtime) PendingApprovals(ctx context.Context, conversationID string) (
 }
 
 func pendingApprovals(snap storage.Snapshot, conversationID string) ([]Approval, error) {
-	rows, err := snap.Page(approvalConversationKey(conversationID, ""), "", 1000)
+	rows, err := storage.Page(context.Background(), snap, approvalConversationKey(conversationID, ""), "", 1000)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func (r *Runtime) Decide(ctx context.Context, id, actor string, allow bool, scop
 // allowed as audit, the intent records its ID). Tool-scoped allows apply to
 // later calls while the conversation revision at request time is unchanged.
 func approvalFor(snap storage.Snapshot, c Conversation, run Run, call provider.ToolCallBlock, args json.RawMessage) (pending *Approval, allowed bool, decided *Approval, err error) {
-	rows, err := snap.Page(approvalConversationKey(c.ID, ""), "", 1000)
+	rows, err := storage.Page(context.Background(), snap, approvalConversationKey(c.ID, ""), "", 1000)
 	if err != nil {
 		return nil, false, nil, err
 	}

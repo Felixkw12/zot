@@ -60,7 +60,7 @@ func usageTotals(ctx context.Context, snap storage.Snapshot, conversationID stri
 		if err := ctx.Err(); err != nil {
 			return totals, err
 		}
-		page, err := snap.Page(prefix, after, 200)
+		page, err := storage.Page(context.Background(), snap, prefix, after, 200)
 		if err != nil {
 			return totals, err
 		}

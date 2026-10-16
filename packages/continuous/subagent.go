@@ -84,7 +84,7 @@ func (r *Runtime) OwnedConversations(ctx context.Context, ownerID string) ([]str
 }
 
 func ownedConversations(snap storage.Snapshot, ownerID string) ([]string, error) {
-	rows, err := snap.Page("owned-conversation/"+ownerID+"/", "", 1000)
+	rows, err := storage.Page(context.Background(), snap, "owned-conversation/"+ownerID+"/", "", 1000)
 	if err != nil {
 		return nil, err
 	}

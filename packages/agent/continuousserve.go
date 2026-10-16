@@ -21,14 +21,15 @@ import (
 
 	"github.com/patriceckhart/zot/packages/agent/attachments"
 	"github.com/patriceckhart/zot/packages/continuous"
-	"github.com/patriceckhart/zot/packages/continuous/storage/journal"
+	"github.com/patriceckhart/zot/packages/continuous/storage"
 )
 
 // continuousServeOptions are the flags of `zot continuous serve`.
 type continuousServeOptions struct {
+	target continuousTarget
+	// store is the local directory holding host endpoints and tokens: the
+	// store directory for local backends, --state-dir for PostgreSQL.
 	store       string
-	backend     string
-	durability  journal.Options
 	socket      string
 	listen      string
 	web         string
@@ -44,8 +45,17 @@ type continuousServeOptions struct {
 
 func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 	opts := continuousServeOptions{policy: continuous.RecoverSafe}
+	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		next, ok, err := opts.target.storageFlag(args, i, seen)
+		if err != nil {
+			return opts, err
+		}
+		if ok {
+			i = next
+			continue
+		}
 		value := func() (string, error) {
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				return "", fmt.Errorf("%s requires a value", arg)
@@ -54,30 +64,6 @@ func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 			return args[i], nil
 		}
 		switch arg {
-		case "--store":
-			v, err := value()
-			if err != nil {
-				return opts, err
-			}
-			opts.store = v
-		case "--durability":
-			v, err := value()
-			if err != nil {
-				return opts, err
-			}
-			if v != "strict" && v != "process" {
-				return opts, fmt.Errorf("durability must be strict or process")
-			}
-			opts.durability.Durability = continuousDurability(v)
-		case "--backend":
-			v, err := value()
-			if err != nil {
-				return opts, err
-			}
-			if !validContinuousBackend(v) {
-				return opts, fmt.Errorf("backend must be journal or sqlite")
-			}
-			opts.backend = v
 		case "--socket":
 			v, err := value()
 			if err != nil {
@@ -158,8 +144,12 @@ func parseContinuousServeArgs(args []string) (continuousServeOptions, error) {
 			}
 		}
 	}
-	if opts.store == "" {
-		return opts, fmt.Errorf("continuous serve requires --store")
+	if err := opts.target.validate("serve", true); err != nil {
+		return opts, err
+	}
+	opts.store = opts.target.store
+	if opts.target.postgres() {
+		opts.store = opts.target.stateDir
 	}
 	if opts.socket != "" && opts.listen != "" {
 		return opts, fmt.Errorf("use --socket or --listen, not both")
@@ -299,11 +289,31 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 			return err
 		}
 	}
+	// A remote-backed host keeps its endpoints in a locked local state
+	// directory, bound to the store identity before anything is published.
+	var state *hostState
+	if opts.target.postgres() {
+		if state, err = acquireHostState(opts.target.stateDir); err != nil {
+			return err
+		}
+		defer state.close()
+	}
 	extMgr, stopExt := setupNonInteractiveExtensions(ctx, hostArgs, &r, "continuous")
 	defer stopExt()
-	store, err := openContinuousStore(ctx, opts.store, opts.backend, opts.durability.Durability)
+	store, err := openContinuousTarget(ctx, opts.target, true)
 	if err != nil {
 		return err
+	}
+	if state != nil {
+		identified, ok := store.(interface{ StoreUUID() string })
+		if !ok {
+			store.Close()
+			return fmt.Errorf("continuous store has no identity")
+		}
+		if err := state.bind(backendPostgres, identified.StoreUUID()); err != nil {
+			store.Close()
+			return err
+		}
 	}
 	rt, err := continuous.New(store)
 	if err != nil {
@@ -396,7 +406,7 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 		ln.Close()
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "zot continuous host: store %s, listening on %s, %d interrupted run(s), %d blocked by policy %s\n", opts.store, ln.Addr(), len(plan.Actions), plan.Blocked, opts.policy)
+	fmt.Fprintf(os.Stderr, "zot continuous host: store %s, listening on %s, %d interrupted run(s), %d blocked by policy %s\n", opts.target.label(), ln.Addr(), len(plan.Actions), plan.Blocked, opts.policy)
 	for _, action := range plan.Actions {
 		fmt.Fprintf(os.Stderr, "  run %s conversation %s: %s (%s)\n", action.RunID, action.ConversationID, action.Action, action.Detail)
 	}
@@ -430,6 +440,13 @@ func runContinuousServe(ctx context.Context, args []string, out io.Writer) (retE
 	stopReload()
 	for i := 1; i < waits; i++ {
 		<-errCh
+	}
+	// A terminal store failure wins over the cancellation it caused, so
+	// shutdown is never reported as clean after storage was lost.
+	if lc, ok := store.(storage.StoreLifecycle); ok && lc.Err() != nil {
+		if cause := lc.Err(); err == nil || !errors.Is(err, cause) {
+			return cause
+		}
 	}
 	if errors.Is(err, context.Canceled) {
 		return nil

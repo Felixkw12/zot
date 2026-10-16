@@ -565,7 +565,7 @@ func TestMigrationInterruptedAndRepeated(t *testing.T) {
 // calls paired.
 func TestNativeCrashAtEveryCommit(t *testing.T) {
 	for _, mode := range []string{"sequential", "parallel"} {
-		for _, backend := range []string{"journal", "sqlite"} {
+		for _, backend := range crashBackends() {
 			t.Run(mode+"/"+backend, func(t *testing.T) { nativeCrashMatrix(t, backend, mode == "parallel") })
 		}
 	}

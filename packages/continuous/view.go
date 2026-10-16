@@ -156,13 +156,15 @@ func (r *Runtime) WatchView(ctx context.Context, conversationID string, after ui
 	// Progress records name their task, not their conversation; tasks of
 	// this conversation are learned from the snapshot and from commits.
 	tasks := map[string]bool{}
-	_ = pageAll(snap, "task-conversation/"+conversationID+"/", func(row storage.Record) error {
+	if err := pageAll(snap, "task-conversation/"+conversationID+"/", func(row storage.Record) error {
 		var id string
 		if json.Unmarshal(row.Value, &id) == nil {
 			tasks[id] = true
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 	return r.Watch(ctx, conversationID, after, func(cm storage.Commit) error {
 		ops := viewOps(cm, conversationID)
 		kept := ops[:0]

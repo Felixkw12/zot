@@ -51,7 +51,7 @@ func (r *Runtime) Outbox(ctx context.Context) ([]Notification, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := snap.Page("outbox/", "", 1000)
+	rows, err := storage.Page(context.Background(), snap, "outbox/", "", 1000)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,9 @@ func (r *Runtime) Acknowledge(ctx context.Context, id string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if _, ok := snap.Get(outboxKey(id)); !ok {
+		if ok, err := exists(snap, outboxKey(id)); err != nil {
+			return false, err
+		} else if !ok {
 			return false, nil
 		}
 		err = r.commit(ctx, snap, "outbox.ack", storage.Operation{Key: outboxKey(id), Delete: true})

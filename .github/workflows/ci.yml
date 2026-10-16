@@ -46,3 +46,80 @@ jobs:
 
       - name: go test
         run: go test -race ./...
+
+  postgres:
+    # Integration tests for the continuous PostgreSQL backend. A required
+    # fixture turns any skip into a failure.
+    name: postgres (${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["15", "18"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: zottest
+          POSTGRES_DB: zottest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      ZOT_TEST_POSTGRES_DSN: postgres://postgres:zottest@127.0.0.1:5432/zottest?sslmode=disable
+      ZOT_TEST_POSTGRES_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: set up go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: TLS fixture
+        # A second server with TLS and a throwaway CA, for verify-full,
+        # wrong-hostname, and unknown-CA checks over real traffic.
+        shell: bash
+        run: |
+          d=$RUNNER_TEMP/pgtls; mkdir -p $d; cd $d
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout ca.key -out ca.crt -days 1 -subj "/CN=zot test ca"
+          openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=pg.zot.test"
+          printf "subjectAltName=DNS:pg.zot.test\n" > ext
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 1 -extfile ext
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout other.key -out other.crt -days 1 -subj "/CN=other ca"
+          sudo chown 999:999 server.key server.crt && sudo chmod 600 server.key
+          docker run -d --name pgtls -e POSTGRES_PASSWORD=zottest -e POSTGRES_DB=zottest -p 5433:5432 \
+            -v $d/server.crt:/tls/server.crt:ro -v $d/server.key:/tls/server.key:ro \
+            postgres:${{ matrix.postgres }} -c ssl=on -c ssl_cert_file=/tls/server.crt -c ssl_key_file=/tls/server.key
+          for i in $(seq 60); do docker exec pgtls pg_isready -U postgres -h 127.0.0.1 && break; sleep 1; done
+          echo "ZOT_TEST_POSTGRES_TLS_ADDR=127.0.0.1:5433" >> $GITHUB_ENV
+          echo "ZOT_TEST_POSTGRES_TLS_CA=$d/ca.crt" >> $GITHUB_ENV
+          echo "ZOT_TEST_POSTGRES_TLS_OTHER_CA=$d/other.crt" >> $GITHUB_ENV
+          echo "ZOT_TEST_POSTGRES_TLS_REQUIRED=1" >> $GITHUB_ENV
+
+      - name: go test (postgres)
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./packages/continuous/storage/postgres/ 2>&1 | tee test.log
+          go test -race -count=1 -v ./packages/agent/ -run 'Postgres|HostState' 2>&1 | tee -a test.log
+          go test -race -count=1 -v ./packages/continuous/ -run 'CrashAtEveryCommit|CrashInsideTool|NestedCrashMatrix|NativeVerticalSlice' 2>&1 | tee -a test.log
+          if ! grep -q -- '--- PASS: TestNestedCrashMatrix/postgres' test.log; then
+            echo "postgres crash matrix did not run"
+            exit 1
+          fi
+          if grep -q -- '--- SKIP' test.log; then
+            echo "postgres integration tests skipped"
+            exit 1
+          fi
+
+      - name: pure Go builds
+        run: |
+          for target in linux/amd64 darwin/arm64 windows/amd64; do
+            CGO_ENABLED=0 GOOS=${target%/*} GOARCH=${target#*/} go build ./...
+          done

@@ -48,7 +48,9 @@ func (r *Runtime) Fork(ctx context.Context, parentID string, at uint64, config *
 		} else if ok && run.Phase != "done" {
 			return Conversation{}, ErrBusy
 		}
-		if _, active := snap.Get(chainKey(parentID)); active {
+		if active, err := exists(snap, chainKey(parentID)); err != nil {
+			return Conversation{}, err
+		} else if active {
 			return Conversation{}, ErrBusy
 		}
 		// The fork point must be a turn boundary: forking between a tool call
@@ -103,7 +105,9 @@ func (r *Runtime) Reset(ctx context.Context, conversationID, handoff string) (Co
 		} else if ok && run.Phase != "done" {
 			return Conversation{}, ErrBusy
 		}
-		if _, active := snap.Get(chainKey(conversationID)); active {
+		if active, err := exists(snap, chainKey(conversationID)); err != nil {
+			return Conversation{}, err
+		} else if active {
 			return Conversation{}, ErrBusy
 		}
 		if c.EntrySequence == ^uint64(0) {

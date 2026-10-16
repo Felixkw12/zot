@@ -21,8 +21,10 @@ const continuousHelp = `zot continuous - experimental persistent execution and s
 Usage:
   zot continuous run "<prompt>" --store <directory> [--backend journal|sqlite] [--request-id <id>] [--workspace <id>] [--json] [zot flags]
   zot continuous run --resume --store <directory> [zot flags]
+  zot continuous run "<prompt>" --backend postgres --store-name <name> [--postgres-dsn-file <file>] [--postgres-operation-timeout <d>] [zot flags]
   zot continuous serve --store <directory> [--backend journal|sqlite] [--socket <path>] [--token-file <file>] [--recover safe|all|none] [zot flags]
   zot continuous serve --store <directory> --listen <host:port> --token-file <file> [--tls-cert <pem> --tls-key <pem> [--tls-client-ca <pem>]]
+  zot continuous serve --backend postgres --store-name <name> --state-dir <directory> [--postgres-dsn-file <file>] [serve flags]
   zot continuous serve --store <directory> --web <host:port> [--web-origin <url>]... [--token-file <file>] [--tls-cert <pem> --tls-key <pem>]
   zot continuous attach "<prompt>" --socket <path>|--address <host:port> [--tls-ca <pem>] --workspace <id> [--token-file <file>] [--file <path>] [--follow] [--json]
   zot continuous worker --root [name=]<directory>... [--ledger <file>] [--environment <name>] [--token <t>]
@@ -60,6 +62,17 @@ Options:
   --durability strict|process   Writes only. Default strict, Windows requires process (journal).
   --backend journal|sqlite      New stores only (run, serve, import). Default journal. Existing
                                stores open with the backend that created them.
+  --backend postgres            External PostgreSQL 15-18 store, selected explicitly on every command
+                               together with --store-name <name> instead of --store. Credentials:
+                               --postgres-dsn-file <file> (private, one line) or
+                               ZOT_CONTINUOUS_POSTGRES_DSN. Requires sslmode=verify-full, or plaintext
+                               to a numeric loopback address or a Unix socket. Strict durability only.
+                               serve needs --state-dir for its socket, token and lock. Prompts, serve
+                               and import create the store. Other commands require it to exist.
+                               backup, restore, verify, format and migrate are journal-only.
+  --postgres-operation-timeout  Bound on admitted database work, 1s-15m, default 15s. Exceeding it,
+                               losing the connection, or an unknown commit outcome stops the store.
+                               Reopen explicitly. Nothing is retried or reconnected.
   --help                       Show this help.
 
 run executes queued work for the workspace root conversation with the host's ordinary
@@ -169,6 +182,7 @@ func continuousDurability(name string) storage.Durability {
 
 type continuousOptions struct {
 	command    string
+	target     continuousTarget
 	store      string
 	backend    string
 	durability storage.Durability
@@ -228,6 +242,18 @@ func parseContinuousOptions(args []string) (continuousOptions, error) {
 			opts.positional = append(opts.positional, arg)
 			continue
 		}
+		switch arg {
+		case "--store-name", "--postgres-dsn-file", "--postgres-operation-timeout", "--state-dir":
+			if opts.command == "verify-backup" {
+				return opts, fmt.Errorf("%s does not apply to verify-backup", arg)
+			}
+			next, _, err := opts.target.storageFlag(args, i, seen)
+			if err != nil {
+				return opts, err
+			}
+			i = next
+			continue
+		}
 		if seen[arg] {
 			return opts, fmt.Errorf("duplicate continuous flag: %s", arg)
 		}
@@ -238,8 +264,10 @@ func parseContinuousOptions(args []string) (continuousOptions, error) {
 				return opts, fmt.Errorf("--store does not apply to verify-backup")
 			}
 		case "--backend":
-			if opts.command != "import" {
-				return opts, fmt.Errorf("--backend applies to import; existing stores open with their own backend")
+			// Local existing stores open with their own backend. PostgreSQL
+			// is never detected, so it is selected explicitly everywhere.
+			if opts.command != "import" && (i+1 >= len(args) || args[i+1] != backendPostgres) {
+				return opts, fmt.Errorf("--backend applies to import, or --backend postgres (existing local stores open with their own backend)")
 			}
 		case "--durability":
 			if opts.command == "verify" || opts.command == "verify-backup" || opts.command == "format" {
@@ -309,7 +337,7 @@ func parseContinuousOptions(args []string) (continuousOptions, error) {
 			}
 		case "--backend":
 			if !validContinuousBackend(value) {
-				return opts, fmt.Errorf("backend must be journal or sqlite")
+				return opts, fmt.Errorf("backend must be journal, sqlite, or postgres")
 			}
 			opts.backend = value
 		case "--format":
@@ -373,8 +401,18 @@ func parseContinuousOptions(args []string) (continuousOptions, error) {
 	if opts.help {
 		return opts, nil
 	}
-	if opts.store == "" && opts.command != "verify-backup" {
-		return opts, fmt.Errorf("continuous requires an explicit --store directory")
+	opts.target.store, opts.target.backend = opts.store, opts.backend
+	opts.target.durability, opts.target.durabilitySet = opts.durability, seen["--durability"]
+	if opts.backend == backendPostgres {
+		switch opts.command {
+		case "verify", "backup", "restore", "format", "migrate":
+			return opts, fmt.Errorf("continuous %s is journal-only and is not supported for --backend postgres, use PostgreSQL backup tooling", opts.command)
+		}
+	}
+	if opts.command != "verify-backup" {
+		if err := opts.target.validate(opts.command, false); err != nil {
+			return opts, err
+		}
 	}
 	expected := 0
 	switch opts.command {
@@ -444,7 +482,15 @@ func runContinuous(ctx context.Context, args []string, out io.Writer) (retErr er
 		return json.NewEncoder(out).Encode(report)
 	}
 	var source *os.File
-	if opts.command == "import" {
+	if opts.target.postgres() {
+		if opts.command == "import" {
+			source, err = os.Open(opts.positional[0])
+			if err != nil {
+				return fmt.Errorf("open import source: %w", err)
+			}
+			defer source.Close()
+		}
+	} else if opts.command == "import" {
 		source, err = os.Open(opts.positional[0])
 		if err != nil {
 			return fmt.Errorf("open import source: %w", err)
@@ -466,7 +512,9 @@ func runContinuous(ctx context.Context, args []string, out io.Writer) (retErr er
 			return fmt.Errorf("open existing continuous store: %s has no journal boundary or sqlite database", opts.store)
 		}
 	}
-	store, err := openContinuousStore(ctx, opts.store, opts.backend, opts.durability)
+	// Import may create a store. Every other command needs an existing one
+	// and must never create authority as a side effect.
+	store, err := openContinuousTarget(ctx, opts.target, opts.command == "import")
 	if err != nil {
 		return err
 	}

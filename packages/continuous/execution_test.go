@@ -600,7 +600,7 @@ func TestExecutionMaxTurns(t *testing.T) {
 // includes a tool round, reopen the journal, and prove recovery converges
 // without duplicate effects or broken pairing.
 func TestExecutionCrashAtEveryCommit(t *testing.T) {
-	for _, backend := range []string{"journal", "sqlite"} {
+	for _, backend := range crashBackends() {
 		t.Run(backend, func(t *testing.T) { crashAtEveryCommit(t, backend) })
 	}
 }

@@ -2,7 +2,9 @@ package continuous
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/patriceckhart/zot/packages/continuous/storage"
 	"github.com/patriceckhart/zot/packages/continuous/storage/journal"
+	"github.com/patriceckhart/zot/packages/continuous/storage/postgres"
 	"github.com/patriceckhart/zot/packages/continuous/storage/sqlite"
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -38,15 +41,30 @@ func TestExecutionProcessCrashInsideTool(t *testing.T) {
 		h.svc.Step(ctx, c.ID)
 		t.Fatal("child survived the crash point")
 	}
-	for _, backend := range []string{"journal", "sqlite"} {
+	for _, backend := range crashBackends() {
 		t.Run(backend, func(t *testing.T) { crashInsideTool(t, backend) })
 	}
 }
 
+// crashBackends lists the persistent backends. PostgreSQL joins when the
+// dedicated test fixture is configured.
+func crashBackends() []string {
+	backends := []string{"journal", "sqlite"}
+	if os.Getenv("ZOT_TEST_POSTGRES_DSN") != "" {
+		backends = append(backends, "postgres")
+	}
+	return backends
+}
+
 // openCrashStore opens the backend named by the crash test environment.
 func openCrashStore(ctx context.Context, backend, path string) (storage.Store, error) {
-	if backend == "sqlite" {
+	switch backend {
+	case "sqlite":
 		return sqlite.Open(ctx, path, sqlite.Options{Durability: storage.Process})
+	case "postgres":
+		// path names the logical store: a unique name per test run.
+		name := "crash-" + fmt.Sprintf("%x", sha256.Sum256([]byte(path)))[:24]
+		return postgres.Open(ctx, os.Getenv("ZOT_TEST_POSTGRES_DSN"), postgres.Options{StoreName: name, Create: true})
 	}
 	return journal.Open(ctx, path, journal.Options{Durability: storage.Process})
 }

@@ -246,11 +246,19 @@ var ErrUnsupportedFormat = errors.New("continuous store format unsupported")
 
 // formatOps raises the store's runtime format to v when it is lower.
 func formatOps(snap storage.Snapshot, v int) []storage.Operation {
-	f, ok, _ := read[RuntimeFormat](snap, runtimeFormatKey)
-	if ok && f.Version >= v {
+	f, ok, err := read[RuntimeFormat](snap, runtimeFormatKey)
+	if err == nil && ok && f.Version >= v {
 		return nil
 	}
+	// On a read error the format is raised again, which is idempotent. The
+	// failed read has already terminated a remote store, so the commit fails.
 	return []storage.Operation{record(runtimeFormatKey, RuntimeFormat{Version: v, Revision: snap.Revision() + 1})}
+}
+
+// exists reports whether key holds a record, failing on a read error.
+func exists(snap storage.Snapshot, key string) (bool, error) {
+	_, ok, err := storage.Get(context.Background(), snap, key)
+	return ok, err
 }
 
 // Format reports the store's runtime record format. Absent means 1.
@@ -287,9 +295,16 @@ func record(key string, value any) storage.Operation {
 	b, _ := json.Marshal(value)
 	return storage.Operation{Key: key, Value: b}
 }
+
+// read decodes one record through the checked snapshot path, so a failed
+// remote read is an error, never a false absence. Remote snapshots bound
+// their own database work, see storage.ContextSnapshot.
 func read[T any](snap storage.Snapshot, key string) (T, bool, error) {
 	var v T
-	b, ok := snap.Get(key)
+	b, ok, err := storage.Get(context.Background(), snap, key)
+	if err != nil {
+		return v, false, err
+	}
 	if !ok {
 		return v, false, nil
 	}
@@ -447,12 +462,15 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 		if err != nil {
 			return Submission{}, err
 		}
-		_, active := snap.Get(chainKey(id))
+		active, err := exists(snap, chainKey(id))
+		if err != nil {
+			return Submission{}, err
+		}
 		if opts.Kind == SubmissionWrite {
 			// A write never starts a model request. It is written now when
 			// nothing is in flight or waiting, else queued and placed in
 			// order at the next boundary.
-			backlog, err := snap.Page("queue/"+id+"/", "", 1)
+			backlog, err := storage.Page(context.Background(), snap, "queue/"+id+"/", "", 1)
 			if err != nil {
 				return Submission{}, err
 			}
@@ -474,12 +492,14 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 			} else if ok && run.Phase != "done" {
 				return Submission{}, ErrBusy
 			}
-			if _, ok := snap.Get(chainKey(id)); ok {
+			if ok, err := exists(snap, chainKey(id)); err != nil {
+				return Submission{}, err
+			} else if ok {
 				return Submission{}, ErrBusy
 			}
 		}
 		if opts.MaxQueue > 0 {
-			queued, err := snap.Page("queue/"+id+"/", "", opts.MaxQueue)
+			queued, err := storage.Page(context.Background(), snap, "queue/"+id+"/", "", opts.MaxQueue)
 			if err != nil {
 				return Submission{}, err
 			}
@@ -503,7 +523,9 @@ func (r *Runtime) SubmitWith(ctx context.Context, id, actor, requestID, content 
 				return Submission{}, err
 			}
 			ops = mergeOps(append(ops, start...))
-			if placed, ok, _ := read[Submission](pendingSnapshot(snap, ops), "submission/"+s.ID); ok {
+			if placed, ok, err := read[Submission](pendingSnapshot(snap, ops), "submission/"+s.ID); isReadFailure(err) {
+				return Submission{}, err
+			} else if ok {
 				s.State = placed.State
 			}
 		}

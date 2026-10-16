@@ -27,7 +27,7 @@ Yet another coding agent harness, lightweight and written (vibe-slopped) in go.
 - standing instructions via `AGENTS.md` files (global and per-project); see [Persistent instructions](#persistent-instructions-agentsmd).
 - reusable instructions via `SKILL.md` files; see [docs/skills.md](docs/skills.md).
 - portable agents from local directories, `.zot` files, or temporary public GitHub downloads; see [docs/zotfiles.md](docs/zotfiles.md).
-- durable, crash-recoverable runs in a persistent local store via `zot continuous run`, or hosted for multiple clients with `zot continuous serve`, `zot continuous attach`, and `zot --continuous`. Interrupted tools are reported, never silently repeated; approvals, steering, budgets, and tasks are persisted. Experimental, see [docs/continuous.md](docs/continuous.md).
+- durable, crash-recoverable runs in a persistent local store via `zot continuous run`, or hosted for multiple clients with `zot continuous serve`, `zot continuous attach`, and `zot --continuous`. Interrupted tools are reported, never silently repeated; approvals, steering, budgets, and tasks are persisted. Stores are a local journal or SQLite file, or optionally an external PostgreSQL server (`--backend postgres`). Experimental, see [docs/continuous.md](docs/continuous.md).
 
 ## Install
 

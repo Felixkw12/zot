@@ -217,7 +217,11 @@ func abortNestedChildren(tx *TaskTx) error {
 				return err
 			}
 			if in.ParentTask == tx.Task().ID {
-				tx.Ops(abortMarks(tx.View(), child)...)
+				marks, err := abortMarks(tx.View(), child)
+				if err != nil {
+					return err
+				}
+				tx.Ops(marks...)
 			}
 		}
 		return nil

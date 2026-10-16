@@ -66,7 +66,7 @@ func (r *Runtime) Retain(ctx context.Context, policy RetentionPolicy, dryRun boo
 				if err := ctx.Err(); err != nil {
 					return err
 				}
-				page, err := snap.Page(prefix, after, 500)
+				page, err := storage.Page(context.Background(), snap, prefix, after, 500)
 				if err != nil {
 					return err
 				}
@@ -117,15 +117,28 @@ func (r *Runtime) Retain(ctx context.Context, policy RetentionPolicy, dryRun boo
 					return nil
 				}
 				// A dedup record has no timestamp of its own; its user entry does.
-				live, _, _ := read[Submission](snap, "submission/"+s.ID)
+				live, _, err := read[Submission](snap, "submission/"+s.ID)
+				if isReadFailure(err) {
+					return err
+				}
 				if live.State == "queued" || live.State == "running" {
 					return nil
 				}
 				c, err := conversation(snap, s.ConversationID)
+				if isReadFailure(err) {
+					return err
+				}
 				if err != nil {
 					return nil
 				}
-				e, ok, _ := read[Entry](snap, entryKey(c.ID, entrySequenceOf(snap, c.ID, s.ID)))
+				seq, err := entrySequenceOf(snap, c.ID, s.ID)
+				if err != nil {
+					return err
+				}
+				e, ok, err := read[Entry](snap, entryKey(c.ID, seq))
+				if isReadFailure(err) {
+					return err
+				}
 				if ok && !e.Time.IsZero() && now.Sub(e.Time) > policy.Dedup {
 					report.Dedup++
 					add(row.Key)
@@ -252,12 +265,15 @@ func (r *Runtime) Retain(ctx context.Context, policy RetentionPolicy, dryRun boo
 // entrySequenceOf finds the admission entry of a submission by scanning the
 // conversation's entries. Conversations are small enough for the sweep;
 // an index would be premature.
-func entrySequenceOf(snap storage.Snapshot, conversationID, submissionID string) uint64 {
+func entrySequenceOf(snap storage.Snapshot, conversationID, submissionID string) (uint64, error) {
 	after := ""
 	for {
-		page, err := snap.Page("entry/"+conversationID+"/", after, 500)
-		if err != nil || len(page) == 0 {
-			return 0
+		page, err := storage.Page(context.Background(), snap, "entry/"+conversationID+"/", after, 500)
+		if err != nil {
+			return 0, err
+		}
+		if len(page) == 0 {
+			return 0, nil
 		}
 		for _, row := range page {
 			after = row.Key
@@ -265,7 +281,7 @@ func entrySequenceOf(snap storage.Snapshot, conversationID, submissionID string)
 			if json.Unmarshal(row.Value, &e) == nil && e.SubmissionID == submissionID && e.Type == "user" {
 				var seq uint64
 				fmt.Sscanf(row.Key[strings.LastIndex(row.Key, "/")+1:], "%d", &seq)
-				return seq
+				return seq, nil
 			}
 		}
 	}

@@ -133,7 +133,14 @@ func (h *Host) Runtime() *Runtime { return h.r }
 // recovery policy, then runs the task scheduler until ctx ends, sleeping
 // until a commit or a persisted deadline. Work interrupted by cancellation
 // stays recoverable.
-func (h *Host) Run(ctx context.Context) error {
+//
+// When the store reports terminal failure, execution is cancelled before
+// task invocations are joined, and Run returns that failure rather than a
+// cancellation.
+func (h *Host) Run(ctx context.Context) (err error) {
+	ctx, stop := storeLifetime(ctx, h.r.store)
+	defer stop()
+	defer func() { err = preferStoreFailure(h.r.store, err) }()
 	if _, _, err := h.r.MigrateLegacy(ctx); err != nil {
 		return err
 	}
@@ -141,7 +148,8 @@ func (h *Host) Run(ctx context.Context) error {
 		return err
 	}
 	// Shutdown joins every task invocation before returning, so no handler
-	// still writes when the caller closes the store.
+	// still writes when the caller closes the store. A store failure has
+	// already cancelled ctx, so the join does not wait on a dead store.
 	defer h.tasks.Join(context.Background())
 	for {
 		if err := ctx.Err(); err != nil {
@@ -317,7 +325,9 @@ func (h *Host) Metrics(ctx context.Context) (HostMetrics, error) {
 	m.BlockedRuns = len(h.blocked)
 	h.mu.Unlock()
 	m.Generation = h.svc.Generation()
-	m.Compaction = compactionMetrics(snap)
+	if m.Compaction, err = compactionMetrics(snap); err != nil {
+		return HostMetrics{}, err
+	}
 	m.Revision = snap.Revision()
 	m.WriterEpoch = h.r.Epoch()
 	m.Watchers = h.events.subscribers()
@@ -325,7 +335,7 @@ func (h *Host) Metrics(ctx context.Context) (HostMetrics, error) {
 	count := func(prefix string) int {
 		n, after := 0, ""
 		for {
-			page, err := snap.Page(prefix, after, 500)
+			page, err := storage.Page(context.Background(), snap, prefix, after, 500)
 			if err != nil || len(page) == 0 {
 				return n
 			}
@@ -337,7 +347,7 @@ func (h *Host) Metrics(ctx context.Context) (HostMetrics, error) {
 	m.ActiveRuns = count("chain/")
 	after := ""
 	for {
-		page, err := snap.Page("approval/", after, 500)
+		page, err := storage.Page(context.Background(), snap, "approval/", after, 500)
 		if err != nil || len(page) == 0 {
 			break
 		}
@@ -504,7 +514,7 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 		}
 		out.Entries = append(out.Entries, e)
 	}
-	rows, err := snap.Page("queue/"+id+"/", "", 1000)
+	rows, err := storage.Page(context.Background(), snap, "queue/"+id+"/", "", 1000)
 	if err != nil {
 		return ConversationSnapshot{}, err
 	}
@@ -540,7 +550,10 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 		return ConversationSnapshot{}, err
 	} else if ok {
 		out.Chain = &chain
-		a := planChain(snap, chain)
+		a, err := planChain(snap, chain)
+		if err != nil {
+			return ConversationSnapshot{}, err
+		}
 		out.Recovery = &a
 	}
 	if run, ok, err := runView(snap, id); err != nil {
@@ -551,7 +564,7 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 	if out.Usage, err = usageTotals(ctx, snap, id); err != nil {
 		return ConversationSnapshot{}, err
 	}
-	taskRows, err := snap.Page("task-conversation/"+id+"/", "", 1000)
+	taskRows, err := storage.Page(context.Background(), snap, "task-conversation/"+id+"/", "", 1000)
 	if err != nil {
 		return ConversationSnapshot{}, err
 	}

@@ -211,7 +211,9 @@ func (r *Runtime) MigrateLegacy(ctx context.Context) (migrated int, blocked map[
 				}
 				blocked[id] = cause
 				notice := outboxOp("migration-blocked-"+run.ID, "migration.blocked", id, "interrupted run cannot continue without a decision: "+cause.Error(), map[string]string{"run_id": run.ID, "error": cause.Error()})
-				if _, seen := snap.Get(outboxKey("migration-blocked-" + run.ID)); seen {
+				if seen, err := exists(snap, outboxKey("migration-blocked-"+run.ID)); err != nil {
+					return migrated, blocked, err
+				} else if seen {
 					break
 				}
 				ops = []storage.Operation{notice}
@@ -360,7 +362,7 @@ func startChainOps(snap storage.Snapshot, c *Conversation) ([]storage.Operation,
 	if c.QueueHeld {
 		return nil, nil
 	}
-	queue, err := snap.Page("queue/"+c.ID+"/", "", 100)
+	queue, err := storage.Page(context.Background(), snap, "queue/"+c.ID+"/", "", 100)
 	if err != nil {
 		return nil, err
 	}
@@ -470,7 +472,7 @@ func (r *Runtime) AdmitQueued(ctx context.Context) (int, error) {
 	want := map[string]bool{}
 	after := ""
 	for {
-		page, err := snap.Page("queue/", after, 500)
+		page, err := storage.Page(context.Background(), snap, "queue/", after, 500)
 		if err != nil {
 			return 0, err
 		}
@@ -495,7 +497,11 @@ func (r *Runtime) AdmitQueued(ctx context.Context) (int, error) {
 			if err != nil {
 				return started, err
 			}
-			if _, active := snap.Get(chainKey(id)); held || active {
+			active, err := exists(snap, chainKey(id))
+			if err != nil {
+				return started, err
+			}
+			if held || active {
 				break
 			}
 			c, err := conversation(snap, id)
@@ -725,7 +731,10 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 					switch published, err := publishSummaryOps(ctx, tx, &fresh, bg); {
 					case errors.Is(err, ErrCompactionStale):
 						notice = "background compaction discarded as stale"
-						stats, _, _ := read[CompactionMetrics](tx.View(), compactionStatsKey)
+						stats, _, err := read[CompactionMetrics](tx.View(), compactionStatsKey)
+						if isReadFailure(err) {
+							return Next{}, err
+						}
 						stats.Stale++
 						tx.Put(compactionStatsKey, stats)
 					case err != nil:
@@ -771,7 +780,10 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 		agent.System = req.System
 		agent.SetMessages(req.Messages)
 	}
-	_, backgroundRunning := tc.Snapshot.Get(backgroundKey(c.ID))
+	backgroundRunning, err := exists(tc.Snapshot, backgroundKey(c.ID))
+	if err != nil {
+		return Next{}, err
+	}
 	startBackground := !tc.Interrupted && !backgroundRunning && policy.BackgroundTokens > 0 && estimateTokens(agent.Messages())+len(agent.System)/4 > policy.BackgroundTokens
 	// Durable retries replace the agent's in-memory ones.
 	agent.MaxRetries = 0
@@ -922,7 +934,9 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 			return x.finish(tx, &fresh, "failed", reason, "")
 		}
 		// The response replaces the live partial atomically.
-		if _, ok := tx.Snapshot.Get(partialKey(c.ID)); ok {
+		if ok, err := exists(tx.Snapshot, partialKey(c.ID)); err != nil {
+			return Next{}, err
+		} else if ok {
 			tx.Delete(partialKey(c.ID))
 		}
 		fresh.EntrySequence++
@@ -1095,6 +1109,9 @@ func (x *NativeExecutor) summarize(ctx context.Context, tc TaskContext) (Next, e
 }
 
 // noticeOps appends a recovery notice to the chain in tx.
+//
+// A failed remote read only drops the human-facing notice: the failure has
+// already terminated the store, so the commit carrying it cannot succeed.
 func (x *NativeExecutor) noticeOps(tx *TaskTx, notice string) {
 	chain, ok, _ := read[Chain](tx.View(), chainKey(tx.Task().ConversationID))
 	if !ok {
@@ -1236,6 +1253,8 @@ func repairToolResults(tx *TaskTx, c *Conversation, calls []toolRef, waited []Ta
 	for _, ref := range calls {
 		t, ok := byID[ref.Task]
 		if !ok {
+			// A failed remote read terminates the store, so the repair
+			// commit fails instead of writing a wrong result.
 			t, _, _ = read[Task](tx.Snapshot, taskKey(ref.Task))
 		}
 		var out toolOutcome
@@ -1275,7 +1294,11 @@ func (x *NativeExecutor) finish(tx *TaskTx, c *Conversation, state, reason, noti
 	if err != nil || !ok || chain.Task != tx.Task().ID {
 		return Next{}, fmt.Errorf("%w: generation without chain", storage.ErrCorrupt)
 	}
-	tx.Ops(settleOps(view, chain.Submissions, state)...)
+	settled, err := settleOps(view, chain.Submissions, state)
+	if err != nil {
+		return Next{}, err
+	}
+	tx.Ops(settled...)
 	pending, err := pendingApprovals(view, c.ID)
 	if err != nil {
 		return Next{}, err
@@ -1288,7 +1311,11 @@ func (x *NativeExecutor) finish(tx *TaskTx, c *Conversation, state, reason, noti
 	}
 	// A live partial of this chain is retained as final output, so no live
 	// record outlives its chain.
-	if p, ok, _ := read[Partial](view, partialKey(c.ID)); ok && !p.Final {
+	p, ok, err := read[Partial](view, partialKey(c.ID))
+	if isReadFailure(err) {
+		return Next{}, err
+	}
+	if ok && !p.Final {
 		p.Final, p.Updated = true, time.Now().UTC()
 		tx.Put(partialKey(c.ID), p)
 	}
@@ -1303,7 +1330,7 @@ func (x *NativeExecutor) finish(tx *TaskTx, c *Conversation, state, reason, noti
 			chain.Notices = append(chain.Notices, fmt.Sprintf("%d queued input(s) withdrawn by the abort", n))
 		}
 	case "failed":
-		if queued, err := view.Page("queue/"+c.ID+"/", "", 1); err != nil {
+		if queued, err := storage.Page(context.Background(), view, "queue/"+c.ID+"/", "", 1); err != nil {
 			return Next{}, err
 		} else if len(queued) > 0 {
 			c.QueueHeld = true
@@ -1565,7 +1592,11 @@ func (x *NativeExecutor) requestApproval(c Conversation, in toolInput, cp toolCh
 		a = Approval{ID: uuid.NewString(), ConversationID: c.ID, RunID: in.RunID, CallID: call.ID, Tool: call.Name, Args: args, ArgsHash: argsHash(args), Summary: req.Summary, State: approvalPending, PolicyRevision: fresh.ConfigRevision, Created: time.Now().UTC(), Revision: tx.Snapshot.Revision() + 1}
 		if in.ParentTask != "" {
 			var parent toolInput
-			if t, ok, _ := read[Task](tx.Snapshot, taskKey(in.ParentTask)); ok {
+			t, ok, err := read[Task](tx.Snapshot, taskKey(in.ParentTask))
+			if isReadFailure(err) {
+				return Next{}, err
+			}
+			if ok {
 				_ = json.Unmarshal(t.Input, &parent)
 			}
 			a.ParentTool = parent.Name
@@ -1615,6 +1646,9 @@ func commitHandoff(tx *TaskTx, in toolInput, callID string, result core.ToolResu
 			continue
 		}
 		sibling, ok, err := read[Task](view, taskKey(ref.Task))
+		if isReadFailure(err) {
+			return Next{}, err
+		}
 		if err != nil || !ok || sibling.State == "terminal" {
 			continue
 		}
@@ -1689,7 +1723,9 @@ func commitToolResult(tx *TaskTx, callID string, result core.ToolResult, status,
 	c.Revision = tx.Snapshot.Revision() + 1
 	tx.Put("conversation/"+c.ID, c)
 	// The progress record of this call is replaced by its result.
-	if _, ok := tx.Snapshot.Get(progressKey(tx.Task().ID)); ok {
+	if ok, err := exists(tx.Snapshot, progressKey(tx.Task().ID)); err != nil {
+		return Next{}, err
+	} else if ok {
 		tx.Delete(progressKey(tx.Task().ID))
 	}
 	next := Next{Outcome: outcome, Result: toolOutcome{Entry: c.EntrySequence, Status: status}}
@@ -1700,7 +1736,11 @@ func commitToolResult(tx *TaskTx, callID string, result core.ToolResult, status,
 		// Recovery decisions are for humans: recorded on the chain, never
 		// model-visible.
 		next.Error = notice
-		if chain, ok, _ := read[Chain](tx.View(), chainKey(c.ID)); ok {
+		chain, ok, err := read[Chain](tx.View(), chainKey(c.ID))
+		if isReadFailure(err) {
+			return Next{}, err
+		}
+		if ok {
 			chain.Notices = append(chain.Notices, notice)
 			chain.Revision = tx.Snapshot.Revision() + 1
 			tx.Put(chainKey(c.ID), chain)
@@ -1786,7 +1826,9 @@ func (x *NativeExecutor) startSubagent(ctx context.Context, tc TaskContext, in t
 			}
 			tx.Ops(ops...)
 			tx.Put("conversation/"+child.ID, child)
-			if _, active := view.Get(chainKey(child.ID)); !active {
+			if active, err := exists(view, chainKey(child.ID)); err != nil {
+				return Next{}, err
+			} else if !active {
 				start, err := startChainOps(tx.View(), &child)
 				if err != nil {
 					return Next{}, err
@@ -2094,10 +2136,13 @@ func (r *Runtime) TaskView(ctx context.Context, conversationID string) (TaskView
 		return TaskView{}, err
 	} else if ok {
 		view.Chain = &chain
-		run := chainRun(snap, chain)
+		run, err := chainRun(snap, chain)
+		if err != nil {
+			return TaskView{}, err
+		}
 		view.Run = &run
 	}
-	rows, err := snap.Page("task-conversation/"+conversationID+"/", "", 1000)
+	rows, err := storage.Page(context.Background(), snap, "task-conversation/"+conversationID+"/", "", 1000)
 	if err != nil {
 		return TaskView{}, err
 	}
@@ -2144,20 +2189,31 @@ func pendingSnapshot(snap storage.Snapshot, ops []storage.Operation) storage.Sna
 }
 
 func (o *overlaySnapshot) Get(key string) (json.RawMessage, bool) {
+	b, ok, _ := o.GetContext(context.Background(), key)
+	return b, ok
+}
+
+// GetContext applies pending operations over a checked base read.
+func (o *overlaySnapshot) GetContext(ctx context.Context, key string) (json.RawMessage, bool, error) {
 	if op, ok := o.ops[key]; ok {
 		if op.Delete {
-			return nil, false
+			return nil, false, nil
 		}
-		return op.Value, true
+		return op.Value, true, nil
 	}
-	return o.Snapshot.Get(key)
+	return storage.Get(ctx, o.Snapshot, key)
 }
 
 func (o *overlaySnapshot) Page(prefix, after string, limit int) ([]storage.Record, error) {
+	return o.PageContext(context.Background(), prefix, after, limit)
+}
+
+// PageContext merges pending operations with a checked base page.
+func (o *overlaySnapshot) PageContext(ctx context.Context, prefix, after string, limit int) ([]storage.Record, error) {
 	// Overlaid deletes can hide base rows, so fetch extra, within the
 	// store's page bound. Callers page on, so a short page is only slower.
 	fetch := min(limit+len(o.ops), 1000)
-	base, err := o.Snapshot.Page(prefix, after, fetch)
+	base, err := storage.Page(ctx, o.Snapshot, prefix, after, fetch)
 	if err != nil {
 		return nil, err
 	}
@@ -2214,11 +2270,16 @@ func mergeOps(ops []storage.Operation) []storage.Operation {
 
 // chainRun projects the active chain onto the run shape for run-oriented
 // clients. The projection is read-only; nothing drives it.
-func chainRun(snap storage.Snapshot, chain Chain) Run {
+// A read failure is returned. A corrupt task record keeps the partial
+// projection, as before, so a damaged record stays visible to inspection.
+func chainRun(snap storage.Snapshot, chain Chain) (Run, error) {
 	run := Run{ID: chain.RunID, ConversationID: chain.ConversationID, Submissions: chain.Submissions, Phase: "request", Turn: 1, Attempt: 1, Notices: chain.Notices, Revision: chain.Revision}
-	t, ok, _ := read[Task](snap, taskKey(chain.Task))
+	t, ok, err := read[Task](snap, taskKey(chain.Task))
+	if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+		return run, err
+	}
 	if !ok {
-		return run
+		return run, nil
 	}
 	run.AbortRequested = t.AbortRequested
 	if _, cp, err := decodeGeneration(t); err == nil {
@@ -2227,7 +2288,11 @@ func chainRun(snap storage.Snapshot, chain Chain) Run {
 			run.Phase = "tools"
 			for _, ref := range cp.Calls {
 				intent := ToolIntent{CallID: ref.CallID, State: "pending"}
-				if tool, ok, _ := read[Task](snap, taskKey(ref.Task)); ok {
+				tool, ok, err := read[Task](snap, taskKey(ref.Task))
+				if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+					return run, err
+				}
+				if ok {
 					in, tcp, _ := decodeTool(tool)
 					intent.Name, intent.Args, intent.Replay, intent.Approval = in.Name, tcp.Args, tcp.Replay, tcp.Approval
 					switch {
@@ -2245,14 +2310,20 @@ func chainRun(snap storage.Snapshot, chain Chain) Run {
 			}
 		}
 	}
-	return run
+	return run, nil
 }
 
 // planChain is the recovery preview of an interrupted chain. Like planRun it
 // reads committed state only.
-func planChain(snap storage.Snapshot, chain Chain) RecoveryAction {
-	run := chainRun(snap, chain)
-	pending, _ := pendingApprovals(snap, chain.ConversationID)
+func planChain(snap storage.Snapshot, chain Chain) (RecoveryAction, error) {
+	run, err := chainRun(snap, chain)
+	if err != nil {
+		return RecoveryAction{}, err
+	}
+	pending, err := pendingApprovals(snap, chain.ConversationID)
+	if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+		return RecoveryAction{}, err
+	}
 	awaiting := false
 	for _, a := range pending {
 		if a.RunID == chain.RunID {
@@ -2261,7 +2332,10 @@ func planChain(snap storage.Snapshot, chain Chain) RecoveryAction {
 	}
 	a := planRun(run, awaiting)
 	a.Executor = executorTasks
-	gen, ok, _ := read[Task](snap, taskKey(chain.Task))
+	gen, ok, err := read[Task](snap, taskKey(chain.Task))
+	if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+		return RecoveryAction{}, err
+	}
 	if ok && !run.AbortRequested && !awaiting && run.Phase == "request" {
 		if gen.Effect == effectStarted {
 			a.Action, a.Detail = "resend", fmt.Sprintf("the model request of turn %d attempt %d may have been sent; it is sent again and the earlier attempt's usage is recorded as unknown", run.Turn, run.Attempt)
@@ -2273,7 +2347,11 @@ func planChain(snap storage.Snapshot, chain Chain) RecoveryAction {
 		_, cp, err := decodeGeneration(gen)
 		if err == nil {
 			for _, ref := range cp.Calls {
-				if parent, found, _ := read[Task](snap, taskKey(ref.Task)); found {
+				parent, found, err := read[Task](snap, taskKey(ref.Task))
+				if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+					return RecoveryAction{}, err
+				}
+				if found {
 					_, intent, _ := decodeTool(parent)
 					replay := parent.Effect == "" || (intent.Replay != core.ReplayNever && intent.Replay != "")
 					children, safe := nestedRecovery(snap, parent, replay)
@@ -2285,7 +2363,7 @@ func planChain(snap storage.Snapshot, chain Chain) RecoveryAction {
 			}
 		}
 	}
-	return a
+	return a, nil
 }
 
 func chainAttempt(t Task) int {
@@ -2334,7 +2412,7 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		return Run{}, false, err
 	}
 	sched := x.Scheduler(reg)
-	sched.Filter = func(snap storage.Snapshot, t Task) bool {
+	sched.FilterContext = func(ctx context.Context, snap storage.Snapshot, t Task) (bool, error) {
 		return ownedBy(snap, t.ConversationID, conversationID)
 	}
 	// Step returns only after every invocation it started has returned, so
@@ -2349,7 +2427,10 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		if err != nil {
 			return last, did, err
 		}
-		run, _, _ := read[Run](snap, runKey(conversationID))
+		run, _, err := read[Run](snap, runKey(conversationID))
+		if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+			return last, did, err
+		}
 		return run, false, cause
 	}
 	for {
@@ -2361,16 +2442,25 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 		if err != nil {
 			return last, did, err
 		}
-		queued, err := snap.Page("queue/"+conversationID+"/", "", 1)
+		queued, err := storage.Page(context.Background(), snap, "queue/"+conversationID+"/", "", 1)
 		if err != nil {
 			return last, did, err
 		}
 		if active {
-			last, did = chainRun(snap, chain), true
+			if last, err = chainRun(snap, chain); err != nil {
+				return last, did, err
+			}
+			did = true
 		}
-		if !active && len(queued) == 0 && !liveTasks(snap, conversationID) {
+		live, err := liveTasks(snap, conversationID)
+		if err != nil {
+			return last, did, err
+		}
+		if !active && len(queued) == 0 && !live {
 			if did {
-				last = settledStepRun(snap, conversationID, last)
+				if last, err = settledStepRun(snap, conversationID, last); err != nil {
+					return last, did, err
+				}
 			}
 			return last, did, nil
 		}
@@ -2408,12 +2498,18 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 			// A call whose outcome is unknown waits for reconciliation with
 			// backoff. Step returns so the caller can restore the receiver;
 			// the next Step or the host reconciles it.
-			if unresolvedCall(snap, conversationID) {
+			if unresolved, err := unresolvedCall(snap, conversationID); err != nil {
+				return last, true, err
+			} else if unresolved {
 				return last, true, fmt.Errorf("%w: reconciliation pending", core.ErrToolOutcomeUnknown)
 			}
 			// A pending human decision parks the call. Step returns instead
 			// of waiting for a human; the decision's commit resumes it.
-			if pending, _ := pendingApprovals(snap, conversationID); len(pending) > 0 {
+			pending, err := pendingApprovals(snap, conversationID)
+			if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+				return last, true, err
+			}
+			if len(pending) > 0 {
 				return last, true, ErrAwaitingApproval
 			}
 			if wake.IsZero() && active {
@@ -2429,55 +2525,77 @@ func (s *Service) stepTasks(ctx context.Context, conversationID string) (Run, bo
 
 // settledStepRun reports the latest committed completion when Step has driven
 // work to idle. A continuation may finish between observations of its chain.
-func settledStepRun(snap storage.Snapshot, conversationID string, last Run) Run {
-	if t, ok, _ := read[Task](snap, taskKey(lastGeneration(snap, conversationID))); ok {
+func settledStepRun(snap storage.Snapshot, conversationID string, last Run) (Run, error) {
+	id, err := lastGeneration(snap, conversationID)
+	if err != nil {
+		return last, err
+	}
+	t, ok, err := read[Task](snap, taskKey(id))
+	if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+		return last, err
+	}
+	if ok {
 		if run, ok := settledRun(t); ok {
-			return run
+			return run, nil
 		}
 	}
-	return last
+	return last, nil
 }
 
 // lastGeneration returns the newest generation task of a conversation.
-func lastGeneration(snap storage.Snapshot, conversationID string) string {
+// Corrupt rows are skipped as before. Read failures are returned.
+func lastGeneration(snap storage.Snapshot, conversationID string) (string, error) {
 	var newest Task
-	_ = pageAll(snap, "task-conversation/"+conversationID+"/", func(row storage.Record) error {
+	err := pageAll(snap, "task-conversation/"+conversationID+"/", func(row storage.Record) error {
 		var id string
 		if json.Unmarshal(row.Value, &id) != nil {
 			return nil
 		}
-		t, ok, _ := read[Task](snap, taskKey(id))
+		t, ok, err := read[Task](snap, taskKey(id))
+		if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+			return err
+		}
 		if ok && t.Kind == TaskKindGeneration && (newest.ID == "" || t.Created.After(newest.Created) || t.Created.Equal(newest.Created) && t.Revision > newest.Revision) {
 			newest = t
 		}
 		return nil
 	})
-	return newest.ID
+	if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+		return "", err
+	}
+	return newest.ID, nil
 }
 
 // ownedBy reports whether conversation id is root or owned, transitively,
-// by a conversation in root's tree.
-func ownedBy(snap storage.Snapshot, id, root string) bool {
+// by a conversation in root's tree. A failed read is an error, so a remote
+// failure never silently drops a task from the caller's tree.
+func ownedBy(snap storage.Snapshot, id, root string) (bool, error) {
 	seen := map[string]bool{}
 	for id != "" && !seen[id] {
 		if id == root {
-			return true
+			return true, nil
 		}
 		seen[id] = true
 		c, err := conversation(snap, id)
-		if err != nil || c.Owner == nil {
-			return false
+		if err != nil {
+			if isReadFailure(err) {
+				return false, err
+			}
+			return false, nil
+		}
+		if c.Owner == nil {
+			return false, nil
 		}
 		id = c.Owner.ConversationID
 	}
-	return false
+	return false, nil
 }
 
 // pageAll visits every record under prefix in key order, page by page.
 func pageAll(snap storage.Snapshot, prefix string, visit func(storage.Record) error) error {
 	after := ""
 	for {
-		page, err := snap.Page(prefix, after, 500)
+		page, err := storage.Page(context.Background(), snap, prefix, after, 500)
 		if err != nil {
 			return err
 		}
@@ -2495,38 +2613,59 @@ func pageAll(snap storage.Snapshot, prefix string, visit func(storage.Record) er
 
 // liveTasks reports whether a conversation has an unpublished background
 // summary still running, which Step waits for so its result is durable.
-func liveTasks(snap storage.Snapshot, conversationID string) bool {
-	id, ok, _ := read[string](snap, backgroundKey(conversationID))
-	if !ok {
-		return false
+func liveTasks(snap storage.Snapshot, conversationID string) (bool, error) {
+	id, ok, err := read[string](snap, backgroundKey(conversationID))
+	if isReadFailure(err) {
+		return false, err
 	}
-	t, ok, _ := read[Task](snap, taskKey(id))
-	return ok && t.State != "terminal"
+	if !ok {
+		return false, nil
+	}
+	t, ok, err := read[Task](snap, taskKey(id))
+	if isReadFailure(err) {
+		return false, err
+	}
+	return ok && t.State != "terminal", nil
+}
+
+// isReadFailure distinguishes a storage read failure from a missing or
+// malformed record, which callers already treat as data.
+func isReadFailure(err error) bool {
+	return err != nil && !errors.Is(err, storage.ErrCorrupt) && !errors.Is(err, ErrNotFound)
 }
 
 // unresolvedCall reports whether a tool call of the conversation's active
 // chain is parked on an unknown outcome.
-func unresolvedCall(snap storage.Snapshot, conversationID string) bool {
-	chain, ok, _ := read[Chain](snap, chainKey(conversationID))
-	if !ok {
-		return false
+func unresolvedCall(snap storage.Snapshot, conversationID string) (bool, error) {
+	chain, ok, err := read[Chain](snap, chainKey(conversationID))
+	if isReadFailure(err) {
+		return false, err
 	}
-	gen, ok, _ := read[Task](snap, taskKey(chain.Task))
 	if !ok {
-		return false
+		return false, nil
+	}
+	gen, ok, err := read[Task](snap, taskKey(chain.Task))
+	if isReadFailure(err) {
+		return false, err
+	}
+	if !ok {
+		return false, nil
 	}
 	_, cp, err := decodeGeneration(gen)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	for _, ref := range cp.Calls {
-		t, ok, _ := read[Task](snap, taskKey(ref.Task))
+		t, ok, err := read[Task](snap, taskKey(ref.Task))
+		if isReadFailure(err) {
+			return false, err
+		}
 		if !ok || t.State != "waiting" || t.Effect != effectStarted {
 			continue
 		}
 		if _, tcp, err := decodeTool(t); err == nil && tcp.Unresolved > 0 {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }

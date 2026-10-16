@@ -59,7 +59,10 @@ func (r *Runtime) RecoveryPreview(ctx context.Context) (RecoveryPlan, error) {
 		if json.Unmarshal(row.Value, &chain) != nil {
 			return storage.ErrCorrupt
 		}
-		action := planChain(snap, chain)
+		action, err := planChain(snap, chain)
+		if err != nil {
+			return err
+		}
 		if !action.Automatic {
 			plan.Blocked++
 		}
@@ -73,7 +76,7 @@ func (r *Runtime) RecoveryPreview(ctx context.Context) (RecoveryPlan, error) {
 		if err := ctx.Err(); err != nil {
 			return plan, err
 		}
-		page, err := snap.Page("run/", after, 200)
+		page, err := storage.Page(context.Background(), snap, "run/", after, 200)
 		if err != nil {
 			return plan, err
 		}
@@ -181,7 +184,7 @@ func (r *Runtime) Abort(ctx context.Context, conversationID string) (Run, error)
 			if err != nil {
 				return Run{}, err
 			}
-			return chainRun(snap, chain), nil
+			return chainRun(snap, chain)
 		}
 		run, ok, err := read[Run](snap, runKey(conversationID))
 		if err != nil {
@@ -239,7 +242,11 @@ func abortLegacyOps(snap storage.Snapshot, run Run) ([]storage.Operation, Run, e
 	run.Phase, run.Outcome, run.Error, run.AbortRequested = "done", "aborted", "aborted by request", true
 	c.Revision = snap.Revision() + 1
 	run.Revision = c.Revision
-	ops = append(ops, settleOps(snap, run.Submissions, "aborted")...)
+	settled, err := settleOps(snap, run.Submissions, "aborted")
+	if err != nil {
+		return nil, Run{}, err
+	}
+	ops = append(ops, settled...)
 	ops = append(ops, record("conversation/"+c.ID, c), record(runKey(c.ID), run))
 	return ops, run, nil
 }

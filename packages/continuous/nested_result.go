@@ -90,7 +90,9 @@ func commitNestedResult(tx *TaskTx, in toolInput, result core.ToolResult, status
 	}
 	result.NestedCalls, result.Status = nested, status
 	stored := boundedNestedResult(result)
-	if _, ok := tx.Snapshot.Get(progressKey(tx.Task().ID)); ok {
+	if ok, err := exists(tx.Snapshot, progressKey(tx.Task().ID)); err != nil {
+		return Next{}, err
+	} else if ok {
 		tx.Delete(progressKey(tx.Task().ID))
 	}
 	if notice != "" {

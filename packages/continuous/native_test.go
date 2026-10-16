@@ -68,7 +68,7 @@ func checkValid(t *testing.T, r *Runtime) Integrity {
 func TestNativeVerticalSlice(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
-	for _, backend := range []string{"journal", "sqlite"} {
+	for _, backend := range crashBackends() {
 		t.Run(backend, func(t *testing.T) {
 			path := filepath.Join(dir, backend)
 			store, err := openCrashStore(ctx, backend, path)
@@ -561,7 +561,7 @@ func TestNativeProcessCrashInsideTool(t *testing.T) {
 		h.sched.Run(ctx)
 		t.Fatal("child survived the crash point")
 	}
-	for _, backend := range []string{"journal", "sqlite"} {
+	for _, backend := range crashBackends() {
 		t.Run(backend, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "store")

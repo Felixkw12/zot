@@ -36,7 +36,7 @@ func (r *Runtime) Withdraw(ctx context.Context, submissionID, actor string) (Sub
 		// After a reorder the slot holding this submission may not be its
 		// own sequence; find the slot that references it.
 		slot := ""
-		rows, err := snap.Page("queue/"+s.ConversationID+"/", "", 1000)
+		rows, err := storage.Page(context.Background(), snap, "queue/"+s.ConversationID+"/", "", 1000)
 		if err != nil {
 			return Submission{}, err
 		}
@@ -80,7 +80,7 @@ func (r *Runtime) Reorder(ctx context.Context, submissionID, actor string) ([]Su
 		if s.State != "queued" {
 			return nil, ErrNotQueued
 		}
-		rows, err := snap.Page("queue/"+s.ConversationID+"/", "", 1000)
+		rows, err := storage.Page(context.Background(), snap, "queue/"+s.ConversationID+"/", "", 1000)
 		if err != nil {
 			return nil, err
 		}

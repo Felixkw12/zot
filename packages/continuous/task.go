@@ -387,7 +387,7 @@ func (r *Runtime) AbortTask(ctx context.Context, id string, includeBackground bo
 			if t.State == "terminal" {
 				return nil
 			}
-			children, err := snap.Page("task-owner/"+id+"/", "", 1000)
+			children, err := storage.Page(context.Background(), snap, "task-owner/"+id+"/", "", 1000)
 			if err != nil {
 				return err
 			}
@@ -439,7 +439,7 @@ func (r *Runtime) Tasks(ctx context.Context, conversationID string) ([]Task, err
 	if err != nil {
 		return nil, err
 	}
-	rows, err := snap.Page("task-conversation/"+conversationID+"/", "", 1000)
+	rows, err := storage.Page(context.Background(), snap, "task-conversation/"+conversationID+"/", "", 1000)
 	if err != nil {
 		return nil, err
 	}
@@ -484,6 +484,10 @@ type TaskScheduler struct {
 	// Two schedulers on one store are safe, since every invocation is
 	// reserved by a fenced commit, but a filter keeps them apart.
 	Filter func(storage.Snapshot, Task) bool
+	// FilterContext is the checked form of Filter. A returned error stops
+	// the tick, so a failed storage read never drops or admits a task.
+	// When both are set, a task must pass both.
+	FilterContext func(context.Context, storage.Snapshot, Task) (bool, error)
 	// Prepare runs at the start of every Tick, before tasks are selected.
 	// It returns how many commits it made. The built-in executor uses
 	// it to admit queued inputs into new generation chains.
@@ -800,7 +804,7 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 		if err := ctx.Err(); err != nil {
 			return Task{}, wake, err
 		}
-		page, err := snap.Page("task/", after, 200)
+		page, err := storage.Page(context.Background(), snap, "task/", after, 200)
 		if err != nil {
 			return Task{}, wake, err
 		}
@@ -818,6 +822,15 @@ func (s *TaskScheduler) selectRunnable(ctx context.Context, snap storage.Snapsho
 			}
 			if s.Filter != nil && !s.Filter(snap, t) {
 				continue
+			}
+			if s.FilterContext != nil {
+				keep, err := s.FilterContext(ctx, snap, t)
+				if err != nil {
+					return Task{}, wake, err
+				}
+				if !keep {
+					continue
+				}
 			}
 			s.mu.Lock()
 			_, active := s.active[t.ID]
@@ -933,7 +946,7 @@ func childrenSettled(snap storage.Snapshot, id string) (bool, error) {
 			}
 		}
 	}
-	children, err := snap.Page("task-owner/"+id+"/", "", 1000)
+	children, err := storage.Page(context.Background(), snap, "task-owner/"+id+"/", "", 1000)
 	if err != nil {
 		return false, err
 	}
@@ -1032,7 +1045,11 @@ func (s *TaskScheduler) runOnce(ctx context.Context, t Task) error {
 			if dep.State != "terminal" {
 				allTerminal = false
 				if dep.Owner == t.ID && !dep.AbortRequested {
-					pendingOps = append(pendingOps, abortMarks(snap, dep)...)
+					marks, err := abortMarks(snap, dep)
+					if err != nil {
+						return err
+					}
+					pendingOps = append(pendingOps, marks...)
 				}
 			}
 		}
@@ -1317,7 +1334,11 @@ func (s *TaskScheduler) applyNext(ctx context.Context, snap storage.Snapshot, t 
 		if id == t.ID || slicesContains(t.Linked, id) {
 			continue
 		}
-		if _, ok := snap.Get(taskKey(id)); !ok && !created[id] {
+		linked, err := exists(snap, taskKey(id))
+		if err != nil {
+			return err
+		}
+		if !linked && !created[id] {
 			return s.fault(ctx, snap, t, "task links a missing task")
 		}
 		t.Linked = append(t.Linked, id)
@@ -1361,7 +1382,7 @@ func (s *TaskScheduler) applyNext(ctx context.Context, snap storage.Snapshot, t 
 			}
 			t.Notices = append(t.Notices, fmt.Sprintf("%s outcome held until owned tasks settle", next.Outcome))
 			t.State, t.WaitPolicy, t.Phase, t.WaitOn = "waiting", "all", "__complete__", nil
-			children, err := snap.Page("task-owner/"+t.ID+"/", "", 1000)
+			children, err := storage.Page(context.Background(), snap, "task-owner/"+t.ID+"/", "", 1000)
 			if err != nil {
 				return err
 			}
@@ -1379,7 +1400,11 @@ func (s *TaskScheduler) applyNext(ctx context.Context, snap storage.Snapshot, t 
 				}
 				t.WaitOn = append(t.WaitOn, id)
 				if next.Outcome != "completed" && !child.AbortRequested {
-					ops = append(ops, abortMarks(snap, child)...)
+					marks, err := abortMarks(snap, child)
+					if err != nil {
+						return err
+					}
+					ops = append(ops, marks...)
 				}
 			}
 			t.Checkpoint, err = json.Marshal(held)
@@ -1552,33 +1577,50 @@ func completeHeld(ctx context.Context, tc TaskContext) (Next, error) {
 
 // abortMarks returns the operations that mark a task and its non-background
 // descendants for abort, bottom-up. Terminal tasks are skipped.
-func abortMarks(snap storage.Snapshot, t Task) []storage.Operation {
+func abortMarks(snap storage.Snapshot, t Task) ([]storage.Operation, error) {
 	var ops []storage.Operation
 	if t.State == "terminal" {
-		return nil
+		return nil, nil
 	}
-	children, _ := snap.Page("task-owner/"+t.ID+"/", "", 1000)
+	children, err := storage.Page(context.Background(), snap, "task-owner/"+t.ID+"/", "", 1000)
+	if err != nil {
+		return nil, err
+	}
 	for _, row := range children {
 		var id string
 		if json.Unmarshal(row.Value, &id) != nil {
 			continue
 		}
 		child, ok, err := read[Task](snap, taskKey(id))
+		if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+			return nil, err
+		}
 		if err != nil || !ok || child.Background || child.AbortRequested {
 			continue
 		}
-		ops = append(ops, abortMarks(snap, child)...)
+		more, err := abortMarks(snap, child)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, more...)
 	}
 	for _, id := range t.Linked {
 		linked, ok, err := read[Task](snap, taskKey(id))
+		if err != nil && !errors.Is(err, storage.ErrCorrupt) {
+			return nil, err
+		}
 		if err != nil || !ok || linked.AbortRequested {
 			continue
 		}
-		ops = append(ops, abortMarks(snap, linked)...)
+		more, err := abortMarks(snap, linked)
+		if err != nil {
+			return nil, err
+		}
+		ops = append(ops, more...)
 	}
 	t.AbortRequested = true
 	t.Revision = snap.Revision() + 1
-	return append(ops, record(taskKey(t.ID), t))
+	return append(ops, record(taskKey(t.ID), t)), nil
 }
 
 // Register adds a definition and the internal completion phase.
