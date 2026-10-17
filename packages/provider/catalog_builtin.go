@@ -334,6 +334,7 @@ var builtinCatalog = []Model{
 	{Provider: "opencode", ID: "gpt-5.1-codex", DisplayName: "GPT-5.1 Codex", ContextWindow: 400000, MaxOutput: 128000, Reasoning: true, PriceInput: 1.07, PriceOutput: 8.5, PriceCacheRead: 0.107, BaseURL: "https://opencode.ai/zen/v1"},
 	// ----- opencode-go -----
 	{Provider: "opencode-go", ID: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash", ContextWindow: 1000000, MaxOutput: 384000, Reasoning: true, PriceInput: 0.14, PriceOutput: 0.28, PriceCacheRead: 0.0028, BaseURL: "https://opencode.ai/zen/go/v1"},
+	{Provider: "opencode-go", ID: "deepseek-v4.1-flash", DisplayName: "DeepSeek V4.1 Flash", ContextWindow: 1000000, MaxOutput: 384000, Reasoning: true, PriceInput: 0.14, PriceOutput: 0.28, PriceCacheRead: 0.0028, BaseURL: "https://opencode.ai/zen/go/v1"},
 	{Provider: "opencode-go", ID: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro", ContextWindow: 1000000, MaxOutput: 384000, Reasoning: true, PriceInput: 1.74, PriceOutput: 3.48, PriceCacheRead: 0.0145, BaseURL: "https://opencode.ai/zen/go/v1"},
 	{Provider: "opencode-go", ID: "glm-5", DisplayName: "GLM-5", ContextWindow: 202752, MaxOutput: 32768, Reasoning: true, PriceInput: 1, PriceOutput: 3.2, PriceCacheRead: 0.2, BaseURL: "https://opencode.ai/zen/go/v1"},
 	{Provider: "opencode-go", ID: "glm-5.1", DisplayName: "GLM-5.1", ContextWindow: 202752, MaxOutput: 32768, Reasoning: true, PriceInput: 1.4, PriceOutput: 4.4, PriceCacheRead: 0.26, BaseURL: "https://opencode.ai/zen/go/v1"},
