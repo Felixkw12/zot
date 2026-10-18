@@ -574,6 +574,7 @@ func (c *anthropicClient) Stream(ctx context.Context, req Request) (<-chan Event
 		for k, v := range c.headers {
 			httpReq.Header.Set(k, v)
 		}
+		setOpenCodeSessionHeader(httpReq, c.Name(), req.SessionID)
 		return httpReq, nil
 	}
 

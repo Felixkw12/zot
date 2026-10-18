@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
 	"github.com/patriceckhart/zot/packages/agent/extproto"
 	"github.com/patriceckhart/zot/packages/agent/modes"
@@ -1066,7 +1067,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		persistMu.Lock()
 		s := sess
 		persistMu.Unlock()
-		bindAgentSession(a, s)
+		bindReplacementAgentSession(a, liveInteractiveAgent(iv, ag), s)
 	}
 	baseBuildAgent := buildAgent
 	buildAgent = func() (*core.Agent, string, string, error) {
@@ -1665,6 +1666,7 @@ func openOrCreateSession(args Args, r Resolved, ag *core.Agent, version string) 
 func openOrCreateSessionState(args Args, r Resolved, ag *core.Agent, version string) (*core.Session, bool, error) {
 	fresh := true
 	if args.NoSess {
+		bindAgentSession(ag, nil)
 		setZotSessionEnvironment(r, nil)
 		return nil, fresh, nil
 	}
@@ -1803,14 +1805,26 @@ func WriteNewTranscript(ag *core.Agent, sess *core.Session, from int) {
 	writeNewTranscriptLocked(ag, sess, from)
 }
 
-// bindAgentSession stamps the zot session id onto the agent so providers
-// that support sticky routing (OpenRouter session_id) can reuse it.
-// No-op when persistence is disabled.
+// bindAgentSession gives the conversation a stable routing ID, independent
+// of transcript persistence. A persisted session overrides a transient ID.
 func bindAgentSession(ag *core.Agent, sess *core.Session) {
-	if ag == nil || sess == nil {
+	if ag == nil {
 		return
 	}
-	ag.SessionID = sess.ID
+	if sess != nil {
+		ag.SessionID = sess.ID
+	} else if ag.SessionID == "" {
+		ag.SessionID = uuid.NewString()
+	}
+}
+
+// bindReplacementAgentSession preserves transient conversation identity when
+// login or a model switch rebuilds the agent without a persisted session.
+func bindReplacementAgentSession(ag, current *core.Agent, sess *core.Session) {
+	if ag != nil && current != nil && sess == nil {
+		ag.SessionID = current.SessionID
+	}
+	bindAgentSession(ag, sess)
 }
 
 // writeNewTranscriptLocked is the same as WriteNewTranscript. The
