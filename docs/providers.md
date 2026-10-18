@@ -207,6 +207,21 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
+OpenCode Zen routes catalog models through Chat Completions or Responses.
+OpenCode Go also supports Anthropic Messages models. Every Go wire sends
+`x-opencode-session` with a stable conversation ID. With `--no-session`, zot
+uses an in-memory ID without reading or writing a session file. Model switches
+preserve that ID within the same conversation.
+
+For OpenCode Go base URL overrides, Chat Completions and Responses use the
+supplied OpenAI API root. Anthropic Messages uses its sibling `/anthropic`
+root, replacing a trailing `/openai/v1` or `/v1`. The legacy `/zen/go/v1`
+root maps to `/inference/go/anthropic` on the same host.
+
+Go cost estimates include the published long-context pricing tiers for Claude
+Haiku 5.5, GPT 6 Luna, Grok 4.7, and Qwen3.7 Plus. DeepSeek estimates use
+off-peak prices and do not account for time-dependent peak pricing.
+
 When Gondola credentials are available, zot refreshes its public text-model
 catalog in the background and adds the discovered models to `/model`.
 

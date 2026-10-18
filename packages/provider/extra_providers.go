@@ -128,22 +128,43 @@ func NewYoloAuto(apiKey, baseURL string) Client {
 	return NewOpenAICompat("yolo-auto", apiKey, baseURL, yoloAutoDefaultBaseURL)
 }
 
-// NewOpenCode is the opencode.ai Zen endpoint. Mixed APIs upstream; this
-// constructor wires the openai-completions flavor only. Models that need
-// the anthropic-messages flavor under the same provider should be built
-// with NewAnthropicCompat against the same base URL.
+// NewOpenCode routes Zen models through Chat Completions or Responses.
 func NewOpenCode(apiKey, baseURL string) Client {
-	return NewOpenAICompat("opencode", apiKey, baseURL, "https://opencode.ai/zen/v1")
+	const defaultBaseURL = "https://opencode.ai/zen/v1"
+	return NewModelRouter("opencode",
+		NewOpenAICompat("opencode", apiKey, baseURL, defaultBaseURL),
+		map[string]Client{
+			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, defaultBaseURL), "opencode"),
+		})
 }
 
 // NewOpenCodeGo routes each model through the wire API exposed by OpenCode Go.
+// Chat-completions models use baseURL as-is; Responses models share it via
+// the Responses client; Anthropic-messages models (claude, minimax, qwen)
+// target the sibling /anthropic tree documented at
+// https://opencode.ai/v2/docs/console/go/. Every wire sends the stable
+// conversation ID in x-opencode-session.
 func NewOpenCodeGo(apiKey, baseURL string) Client {
 	const defaultBaseURL = "https://opencode.ai/zen/go/v1"
+	root := firstNonEmptyString(baseURL, defaultBaseURL)
 	return NewModelRouter("opencode-go",
 		NewOpenAICompat("opencode-go", apiKey, baseURL, defaultBaseURL),
 		map[string]Client{
-			APIResponses: NewOpenAIResponsesNamed(apiKey, firstNonEmptyString(baseURL, defaultBaseURL), "opencode-go"),
+			APIResponses:         NewOpenAIResponsesNamed(apiKey, root, "opencode-go"),
+			APIAnthropicMessages: NewAnthropicCompat("opencode-go", apiKey, anthropicGoBase(root)),
 		})
+}
+
+// anthropicGoBase maps an opencode-go OpenAI base URL to its sibling
+// Anthropic-messages tree (…/go/anthropic serves /v1/messages).
+func anthropicGoBase(openaiBase string) string {
+	root := strings.TrimRight(openaiBase, "/")
+	if strings.HasSuffix(root, "/zen/go/v1") {
+		return strings.TrimSuffix(root, "/zen/go/v1") + "/inference/go/anthropic"
+	}
+	root = strings.TrimSuffix(root, "/v1")
+	root = strings.TrimSuffix(root, "/openai")
+	return root + "/anthropic"
 }
 
 // NewMinimaxOpenAI is the OpenAI-completions flavor of MiniMax, in case
