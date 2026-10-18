@@ -138,7 +138,8 @@ func TestPostgresDSNSources(t *testing.T) {
 		"oversized": []byte(strings.Repeat("a", 64<<10+1)),
 	}
 	for name, content := range bad {
-		p := filepath.Join(dir, name)
+		// Prefix fixture names so "nul" is not the reserved Windows NUL device.
+		p := filepath.Join(dir, "dsn-"+name)
 		writePrivate(t, p, content)
 		_, err := readPostgresDSNFile(p)
 		if err == nil {
