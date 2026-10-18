@@ -64,6 +64,11 @@ func (s *Store) Commit(ctx context.Context, m storage.Mutation) (storage.Commit,
 	}
 	s.mu.Lock()
 	s.revision = c.Revision
+	s.advanceReadsLocked(c)
+	s.cacheCommitLocked(c)
+	for _, op := range c.Operations {
+		s.cacheRecordLocked(c.Revision, op.Key, op.Value)
+	}
 	if s.state == stateOpen {
 		close(s.changed)
 		s.changed = make(chan struct{})
@@ -91,23 +96,15 @@ func (s *Store) persist(ctx context.Context, c storage.Commit, oldRevision, oldE
 			cancel()
 		}
 	}()
-	if _, err := tx.Exec(ctx, `SET LOCAL synchronous_commit = on`); err != nil {
-		return safeError("commit", err)
-	}
-	var revision, epoch int64
-	if err := tx.QueryRow(ctx, `SELECT revision, epoch
+	batch := &pgx.Batch{}
+	// Pipeline the durability setting, row lock, and writes. Validate the
+	// locked counters before sending COMMIT, rolling back every queued write
+	// on a mismatch. No external effect or acknowledgement precedes COMMIT.
+	batch.Queue(`SET LOCAL synchronous_commit = on`)
+	batch.Queue(`SELECT revision, epoch
 FROM zot_continuous.stores
 WHERE id = $1
-FOR UPDATE`, s.storeID).Scan(&revision, &epoch); err != nil {
-		return safeError("lock store row", err)
-	}
-	if uint64(epoch) != oldEpoch {
-		return fmt.Errorf("continuous postgres store %s: persisted epoch %d differs from owned epoch %d: %w", s.name, epoch, oldEpoch, storage.ErrFenced)
-	}
-	if uint64(revision) != oldRevision {
-		return fmt.Errorf("continuous postgres store %s: persisted revision differs under exclusive ownership: %w", s.name, storage.ErrCorrupt)
-	}
-	batch := &pgx.Batch{}
+FOR UPDATE`, s.storeID)
 	batch.Queue(`INSERT INTO zot_continuous.commits (store_id, revision, epoch, commit_schema, committed_time, actor, operation_count) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		s.storeID, int64(c.Revision), int64(c.Epoch), int32(c.Schema), c.Time.UTC().Format(time.RFC3339Nano), bytea(c.Actor), int32(len(c.Operations)))
 	for i, op := range c.Operations {
@@ -122,7 +119,22 @@ FOR UPDATE`, s.storeID).Scan(&revision, &epoch); err != nil {
 SET revision = $2, epoch = $3
 WHERE id = $1 AND revision = $4 AND epoch = $5`, s.storeID, int64(c.Revision), int64(c.Epoch), int64(oldRevision), int64(oldEpoch))
 	results := tx.SendBatch(ctx, batch)
-	for i := 0; i < batch.Len(); i++ {
+	// Drain the batch before the deferred rollback on any early return.
+	defer results.Close()
+	if _, err := results.Exec(); err != nil {
+		return safeError("commit", err)
+	}
+	var revision, epoch int64
+	if err := results.QueryRow().Scan(&revision, &epoch); err != nil {
+		return safeError("lock store row", err)
+	}
+	if uint64(epoch) != oldEpoch {
+		return fmt.Errorf("continuous postgres store %s: persisted epoch %d differs from owned epoch %d: %w", s.name, epoch, oldEpoch, storage.ErrFenced)
+	}
+	if uint64(revision) != oldRevision {
+		return fmt.Errorf("continuous postgres store %s: persisted revision differs under exclusive ownership: %w", s.name, storage.ErrCorrupt)
+	}
+	for i := 2; i < batch.Len(); i++ {
 		tag, err := results.Exec()
 		if err != nil {
 			results.Close()

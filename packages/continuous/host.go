@@ -504,15 +504,27 @@ func (r *Runtime) ConversationSnapshot(ctx context.Context, id string, limit int
 		start = c.EntrySequence - uint64(limit) + 1
 		out.More = true
 	}
-	for seq := start; seq <= c.EntrySequence; seq++ {
-		e, ok, err := read[Entry](snap, entryKey(id, seq))
+	if start <= c.EntrySequence {
+		// Entries have contiguous, ordered keys. Read the newest window in
+		// one page rather than paying one remote lookup per transcript row.
+		count := int(c.EntrySequence - start + 1)
+		rows, err := storage.Page(ctx, snap, "entry/"+id+"/", entryKey(id, start-1), count)
 		if err != nil {
 			return ConversationSnapshot{}, err
 		}
-		if !ok {
+		if len(rows) != count {
 			return ConversationSnapshot{}, fmt.Errorf("%w: missing entry", storage.ErrCorrupt)
 		}
-		out.Entries = append(out.Entries, e)
+		for i, row := range rows {
+			if row.Key != entryKey(id, start+uint64(i)) {
+				return ConversationSnapshot{}, fmt.Errorf("%w: missing entry", storage.ErrCorrupt)
+			}
+			var e Entry
+			if json.Unmarshal(row.Value, &e) != nil {
+				return ConversationSnapshot{}, fmt.Errorf("%w: invalid continuous record", storage.ErrCorrupt)
+			}
+			out.Entries = append(out.Entries, e)
+		}
 	}
 	rows, err := storage.Page(context.Background(), snap, "queue/"+id+"/", "", 1000)
 	if err != nil {

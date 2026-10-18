@@ -98,6 +98,50 @@ func TestConformance(t *testing.T) {
 	conformance.Run(t, func(t *testing.T) storage.Store { return openTest(t, uniqueName(t)) })
 }
 
+// countWrites measures protocol flushes, not wall-clock latency. With small,
+// warmed statements each flush is one sequential database round trip.
+type countWrites struct {
+	net.Conn
+	writes atomic.Int64
+}
+
+func (c *countWrites) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	return c.Conn.Write(p)
+}
+
+func TestCommitRoundTrips(t *testing.T) {
+	var writer *countWrites
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		counted := &countWrites{Conn: conn}
+		if writer == nil {
+			writer = counted
+		}
+		return counted, nil
+	}
+	s, err := Open(context.Background(), testDSN(t), Options{
+		StoreName: uniqueName(t), Create: true, dial: dial, HeartbeatInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if s.writer.Config().TLSConfig != nil {
+		t.Skip("protocol flush counting requires a plaintext fixture")
+	}
+	// Warm statement descriptions before counting steady-state flushes.
+	commit(t, s, put("k", `1`))
+	before := writer.writes.Load()
+	commit(t, s, put("k", `2`))
+	if got := writer.writes.Load() - before; got != 3 {
+		t.Fatalf("commit used %d protocol flushes, want 3", got)
+	}
+}
+
 func TestAcquisitionAndReopen(t *testing.T) {
 	name := uniqueName(t)
 	a := openTest(t, name)
@@ -350,9 +394,15 @@ func TestPayloadLimits(t *testing.T) {
 }
 
 func TestCallerCancellationKeepsSessionsHealthy(t *testing.T) {
-	s := openTest(t, uniqueName(t), func(o *Options) { o.admissionWait = 200 * time.Millisecond })
+	s := openTest(t, uniqueName(t))
 	ctx := context.Background()
 	commit(t, s, put("k", `1`))
+	// Reopen with a cold cache so these reads exercise database admission,
+	// not the acknowledged-write cache.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s = openTest(t, s.name, func(o *Options) { o.admissionWait = 200 * time.Millisecond })
 	// Hold the reader gate so the caller waits at admission.
 	s.rgate <- struct{}{}
 	snap, _ := s.Snapshot(ctx)
@@ -527,9 +577,21 @@ func TestFencedByPersistedEpoch(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap, _ := s.Snapshot(ctx)
-	_, err := s.Commit(ctx, storage.Mutation{ExpectedRevision: snap.Revision(), Epoch: s.Epoch()})
+	_, err := s.Commit(ctx, storage.Mutation{ExpectedRevision: snap.Revision(), Epoch: s.Epoch(), Operations: []storage.Operation{put("must-not-persist", `1`)}})
 	if !errors.Is(err, storage.ErrFenced) || !errors.Is(s.Err(), storage.ErrFenced) {
 		t.Fatalf("fencing: %v / %v", err, s.Err())
+	}
+	// The lock check and writes share one batch, but a fenced batch must
+	// roll back both its header and its record rows before any COMMIT.
+	var records, headers int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM zot_continuous.records WHERE store_id = $1 AND key = $2`, s.storeID, bytea("must-not-persist")).Scan(&records); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM zot_continuous.commits WHERE store_id = $1 AND revision = $2`, s.storeID, int64(snap.Revision()+1)).Scan(&headers); err != nil {
+		t.Fatal(err)
+	}
+	if records != 0 || headers != 0 {
+		t.Fatal("fenced batch persisted partial writes")
 	}
 }
 

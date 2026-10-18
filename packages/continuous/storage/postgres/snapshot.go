@@ -96,6 +96,9 @@ func (v *snapshot) GetContext(ctx context.Context, key string) (json.RawMessage,
 	if v.revision > math.MaxInt64 {
 		return nil, false, storage.ErrCursor
 	}
+	if value, found, cached, err := v.s.cachedRecord(ctx, v.revision, key); err != nil || cached {
+		return value, found, err
+	}
 	var out json.RawMessage
 	var found bool
 	err := v.read(ctx, func(ctx context.Context, conn *pgx.Conn) error {
@@ -130,6 +133,7 @@ LIMIT 1`, v.s.storeID, digest(key), bytea(key), int64(v.revision)).Scan(&deleted
 	if err != nil {
 		return nil, false, err
 	}
+	v.s.cacheRecord(v.revision, key, out)
 	return out, found, nil
 }
 
@@ -154,6 +158,10 @@ func (v *snapshot) PageContext(ctx context.Context, prefix, after string, limit 
 	}
 	if v.revision > math.MaxInt64 {
 		return nil, storage.ErrCursor
+	}
+	cacheKey := pageCacheKey{prefix, after, limit}
+	if rows, cached, err := v.s.cachedPage(ctx, v.revision, cacheKey); err != nil || cached {
+		return rows, err
 	}
 	var lower, upper any
 	if prefix != "" {
@@ -215,5 +223,11 @@ LIMIT $7`, v.s.storeID, int64(v.revision), bytea(after), lower, upper, bytea(pre
 	if out == nil {
 		out = []storage.Record{}
 	}
+	v.s.mu.Lock()
+	v.s.cachePageLocked(v.revision, cacheKey, out)
+	for _, row := range out {
+		v.s.cacheRecordLocked(v.revision, row.Key, row.Value)
+	}
+	v.s.mu.Unlock()
 	return out, nil
 }

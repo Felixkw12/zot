@@ -74,6 +74,15 @@ type Store struct {
 	changed  chan struct{}
 	done     chan struct{}
 
+	// Point reads are memoized by exact snapshot revision, under mu.
+	records     map[recordCacheKey]json.RawMessage
+	recordBytes int
+	pages       map[pageCacheKey]cachedPage
+	pageBytes   int
+	pageItems   int
+	recent      []cachedCommit
+	recentBytes int
+
 	heartbeat   sync.WaitGroup
 	cleanupOnce sync.Once
 	cleaned     chan struct{}

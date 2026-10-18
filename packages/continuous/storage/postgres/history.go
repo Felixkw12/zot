@@ -37,6 +37,16 @@ func (s *Store) Scan(ctx context.Context, after uint64, limit int) ([]storage.Co
 	if after == high {
 		return []storage.Commit{}, nil
 	}
+	s.mu.Lock()
+	if err := s.terminalLocked(); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	cached, ok := s.cachedCommitsLocked(after, high, limit)
+	s.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
 	view := &snapshot{s: s, revision: high}
 	var out []storage.Commit
 	err := view.read(ctx, func(ctx context.Context, conn *pgx.Conn) error {

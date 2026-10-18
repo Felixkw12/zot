@@ -144,6 +144,16 @@ func parseConfig(dsn string) (*pgx.ConnConfig, error) {
 	}
 	if cfg.TLSConfig != nil {
 		tc := cfg.TLSConfig.Clone()
+		// Neon offers pooled connection strings by default, but the writer
+		// lock requires a persistent session. Route only known Neon endpoint
+		// hostnames to their direct counterpart, without changing the DSN.
+		// TLS verification and SNI must follow the actual destination.
+		host := strings.TrimSuffix(strings.ToLower(cfg.Host), ".")
+		endpoint, region, _ := strings.Cut(host, ".")
+		if strings.HasPrefix(endpoint, "ep-") && strings.HasSuffix(endpoint, "-pooler") && strings.HasSuffix(region, ".neon.tech") {
+			cfg.Host = strings.TrimSuffix(endpoint, "-pooler") + "." + region
+			tc.ServerName = cfg.Host
+		}
 		if tc.MinVersion < tls.VersionTLS12 {
 			tc.MinVersion = tls.VersionTLS12
 		}

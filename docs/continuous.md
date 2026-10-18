@@ -1425,9 +1425,17 @@ the `fsync` check, prints a warning on every open, and leaves all other
 checks in place. zot cannot tell such a service apart from a self-hosted
 server with `fsync` switched off, where a crash can lose acknowledged
 commits, so the flag means trusting your provider's durability guarantee.
-Neon's `-pooler` endpoints are transaction poolers and stay unsupported: use
-the direct endpoint. A suspended Neon compute drops the connection, which
-stops the store like any other lost session.
+You can supply a Neon connection string containing an `ep-...-pooler` hostname.
+zot automatically connects to its direct counterpart (the hostname without
+`-pooler`) because the writer lock requires a persistent session. TLS verifies
+the direct hostname, credentials and other connection settings are preserved,
+and the DSN file is not changed. This routing also applies to hosts supplied
+through environment variables or service files. The direct endpoint must be
+reachable under your network policy. Transaction pooling itself remains
+unsupported, and other proxy hostnames are not rewritten. Losing session
+affinity can produce `heartbeat: writer lock lost: continuous writer fenced`,
+which stops the host to prevent unsafe writes. A suspended Neon compute drops
+the connection, which stops the store like any other lost session.
 
 zot never creates databases, roles, grants, or extensions. It uses the fixed
 schema `zot_continuous` (layout version 1). Creating it requires `CREATE` on
@@ -1500,6 +1508,54 @@ lossless migration between backends.
 
 ### Performance
 
+Remote database latency matters: a steady-state commit with warmed statements
+uses three sequential protocol flushes (begin, batched durability setting,
+row lock and writes, commit). Locked counters are checked before COMMIT is
+sent. A mismatch rolls back the entire batch. At 50 ms network round-trip
+latency, this is roughly 150 ms before database processing and durable commit
+costs. Initial statement preparation can add round trips. Reads share one
+reader connection and writes share one writer connection, so concurrent
+operations queue. Run the host close to the database region. Raising the
+operation timeout does not reduce latency. The local benchmarks below do not
+predict remote Neon performance.
+
+Conversation snapshots fetch their newest transcript entries in one page,
+not one database request per entry. PostgreSQL uses bounded per-store caches:
+
+- Point reads: up to 1024 entries and 4 MiB of key/value bytes. Successful
+  writes and page reads populate it, including verified negative lookups.
+- Pages: up to 1024 combined request/record items and 4 MiB of key/value
+  bytes. Empty pages count as one item. Prefix, cursor, limit, and revision
+  are all part of a cache hit.
+- Recent commits: up to 128 commits and 4 MiB of actor/key/value bytes, so
+  live watchers do not fetch just-acknowledged writes back from the database.
+  Older cursors fall back to checked database history.
+
+These payload budgets have additional bounded metadata overhead. Values are
+copied on return, and cancellation and store failure still apply to cache
+hits. Full read caches are cleared, the recent-commit cache evicts its oldest
+commits, and oversized results bypass caching. Reopening starts cold. After
+an acknowledged commit, unchanged point reads and pages advance to the new
+revision. Any changed key invalidates matching pages, including cached empty
+pages. Old snapshots still read their original immutable versions. Thus an
+unrelated commit does not force the executor to refetch every unchanged
+record and index page. Cache misses still need the database. The caches rely
+on exclusive writer ownership and immutable history: editing record versions
+or commits outside zot is unsupported.
+
+To measure a complete prompt without calling a provider, use the dedicated
+local PostgreSQL test fixture and run:
+
+```sh
+go test ./packages/continuous/storage/postgres -run '^$' \
+  -bench '^BenchmarkPromptRoundTrip$' -benchtime=5x
+```
+
+The synthetic-provider benchmark reports commits and reader/writer protocol
+flushes per prompt, as well as loopback time. It uses
+`ZOT_TEST_POSTGRES_DSN`, never the production DSN, and does not measure model
+latency, a web client, or the Cloudflare tunnel.
+
 Records are immutable versions, never physically pruned (retention writes
 tombstones). Point reads use a digest index and are cheap. Prefix pages use a
 512-byte prefix index for selective prefixes, but a broad prefix over a long
@@ -1509,7 +1565,8 @@ store size, but one `Scan` page of large commits can still use substantial
 memory. Raise `--postgres-operation-timeout` for known heavy workloads.
 Exceeding it still terminates the store.
 
-Measured with `go test -bench . ./packages/continuous/storage/postgres/` on
+The following historical measurements predate the point-read cache. They
+were measured with `go test -bench . ./packages/continuous/storage/postgres/` on
 an Apple M1 Pro against PostgreSQL 15.8 and 18.6 in local Docker containers
 on tmpfs (loopback, no disk flush cost, so commit latency here is a lower
 bound):

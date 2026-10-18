@@ -61,6 +61,51 @@ func TestTransportPolicy(t *testing.T) {
 	}
 }
 
+func TestNeonPoolerUsesDirectEndpoint(t *testing.T) {
+	clearPGEnv(t)
+	const direct = "ep-example.us-east-2.aws.neon.tech"
+	for _, dsn := range []string{
+		"postgres://u:private-password@ep-example-pooler.us-east-2.aws.neon.tech:5433/db?sslmode=verify-full",
+		"host=EP-EXAMPLE-POOLER.US-EAST-2.AWS.NEON.TECH. port=5433 user=u password=private-password dbname=db sslmode=verify-full",
+	} {
+		cfg, err := parseConfig(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Host != direct || cfg.TLSConfig.ServerName != direct {
+			t.Fatalf("host=%q TLS server name=%q, want direct endpoint", cfg.Host, cfg.TLSConfig.ServerName)
+		}
+		if cfg.User != "u" || cfg.Password != "private-password" || cfg.Database != "db" || cfg.Port != 5433 {
+			t.Fatal("endpoint routing changed other connection fields")
+		}
+		if cfg.TLSConfig.InsecureSkipVerify || cfg.TLSConfig.MinVersion < 0x0303 || len(cfg.Fallbacks) != 0 {
+			t.Fatal("endpoint routing weakened transport policy")
+		}
+	}
+	for _, host := range []string{
+		direct,
+		"session-pooler.example.com",
+		"ep-example-pooler.neon.tech.example.com",
+		"not-an-endpoint-pooler.us-east-2.aws.neon.tech",
+	} {
+		cfg, err := parseConfig("host=" + host + " user=u sslmode=verify-full")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Host != host || cfg.TLSConfig.ServerName != host {
+			t.Fatal("non-Neon-pooler endpoint was rewritten")
+		}
+	}
+	t.Setenv("PGHOST", "ep-example-pooler.us-east-2.aws.neon.tech")
+	cfg, err := parseConfig("user=u sslmode=verify-full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Host != direct || cfg.TLSConfig.ServerName != direct {
+		t.Fatal("pooler from environment was not routed to direct endpoint")
+	}
+}
+
 func TestEnvironmentFallbacksRejected(t *testing.T) {
 	clearPGEnv(t)
 	// No sslmode in the DSN: the environment default "prefer" produces a
