@@ -1621,8 +1621,12 @@ created the schema, the store row, or an acquisition commit.
 
 `go test ./...` needs no server. Set `ZOT_TEST_POSTGRES_DSN` to a dedicated,
 disposable database to run the integration tests. They create uniquely named
-stores and never drop databases or schemas. `ZOT_TEST_POSTGRES_REQUIRED=1`
-turns a missing fixture into a failure, as CI does for PostgreSQL 15 and 18.
+stores and never drop databases or schemas. `TestFsyncCheck` additionally needs
+`ZOT_TEST_POSTGRES_NOFSYNC_DSN` pointing to a separate disposable server started
+with `fsync=off`, to check both default refusal and explicit durability trust.
+`ZOT_TEST_POSTGRES_REQUIRED=1` turns either missing database fixture into a
+failure, as CI does for PostgreSQL 15 and 18. CI provides the `fsync=off` server
+separately, leaving the main fixture's durability settings unchanged.
 With the fixture set, the execution and nested crash matrices also run on
 PostgreSQL. `TestTLSTransport` additionally needs a TLS-enabled server whose
 certificate names `pg.zot.test`: `ZOT_TEST_POSTGRES_TLS_ADDR` (its

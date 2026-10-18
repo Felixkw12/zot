@@ -722,10 +722,14 @@ func waitFor(t *testing.T, ok func() bool) {
 
 // TestFsyncCheck runs against ZOT_TEST_POSTGRES_NOFSYNC_DSN, a disposable
 // server started with fsync=off. Open refuses it unless the operator opts
-// in with TrustRemoteDurability.
+// in with TrustRemoteDurability. Required integration runs must provide this
+// fixture as well as the ordinary server.
 func TestFsyncCheck(t *testing.T) {
 	dsn := os.Getenv("ZOT_TEST_POSTGRES_NOFSYNC_DSN")
 	if dsn == "" {
+		if os.Getenv("ZOT_TEST_POSTGRES_REQUIRED") != "" {
+			t.Fatal("ZOT_TEST_POSTGRES_REQUIRED is set but ZOT_TEST_POSTGRES_NOFSYNC_DSN is empty")
+		}
 		t.Skip("ZOT_TEST_POSTGRES_NOFSYNC_DSN not set")
 	}
 	name := uniqueName(t)

@@ -102,6 +102,22 @@ jobs:
           echo "ZOT_TEST_POSTGRES_TLS_OTHER_CA=$d/other.crt" >> $GITHUB_ENV
           echo "ZOT_TEST_POSTGRES_TLS_REQUIRED=1" >> $GITHUB_ENV
 
+      - name: fsync-off fixture
+        # Test default refusal and explicit trust without weakening the main
+        # fixture's durability or the no-skipped-tests check.
+        shell: bash
+        run: |
+          docker run -d --name pgnofsync -e POSTGRES_PASSWORD=zottest -e POSTGRES_DB=zottest -p 5434:5432 \
+            postgres:${{ matrix.postgres }} -c fsync=off
+          for i in $(seq 60); do
+            if docker exec pgnofsync pg_isready -U postgres -h 127.0.0.1; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec pgnofsync pg_isready -U postgres -h 127.0.0.1
+          echo "ZOT_TEST_POSTGRES_NOFSYNC_DSN=postgres://postgres:zottest@127.0.0.1:5434/zottest?sslmode=disable" >> $GITHUB_ENV
+
       - name: go test (postgres)
         shell: bash
         run: |
