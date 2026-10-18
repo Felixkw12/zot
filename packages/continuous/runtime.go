@@ -92,6 +92,7 @@ func (c AgentConfig) allows(name string) bool {
 
 type Conversation struct {
 	ID            string      `json:"id"`
+	Title         string      `json:"title"`
 	Created       time.Time   `json:"created"`
 	Revision      uint64      `json:"revision"`
 	Config        AgentConfig `json:"config"`

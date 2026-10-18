@@ -15,6 +15,7 @@ import (
 //	execution  the active chain and its live tasks (chain/, task/)
 //	queue      unclaimed submissions in order (queue/, submission/)
 //	usage      the usage ledger (usage/)
+//	metadata   display title
 //	agent      model, reasoning, extensions, placement modes, tool lists
 //	           (the conversation's AgentConfig)
 //	provider   the provider identity: provider name and provider session
@@ -32,6 +33,7 @@ const (
 	ViewExecution = "execution"
 	ViewQueue     = "queue"
 	ViewUsage     = "usage"
+	ViewMetadata  = "metadata"
 	ViewAgent     = "agent"
 	ViewProvider  = "provider"
 	ViewEntries   = "entries"
@@ -85,6 +87,10 @@ func viewOps(cm storage.Commit, conversationID string) []ViewOp {
 			if op.Delete || json.Unmarshal(op.Value, &c) != nil {
 				continue
 			}
+			metadata, _ := json.Marshal(struct {
+				Title string `json:"title"`
+			}{Title: c.Title})
+			put(ViewMetadata, "", metadata, false)
 			agent, _ := json.Marshal(c.Config)
 			put(ViewAgent, "", agent, false)
 			ident, _ := json.Marshal(ProviderIdentity{Provider: c.Config.Provider, Model: c.Config.Model, Session: c.ProviderSessionID()})

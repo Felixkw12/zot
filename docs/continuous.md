@@ -583,8 +583,8 @@ disabled (`PartialFlushInterval < 0`) streamed text arrives with the
 response commit.
 
 A conversation view is the live state of a conversation as typed documents:
-`execution` (chain and live tasks), `queue`, `usage`, `agent` (the
-configuration), `provider` (provider, model, provider session), `entries`,
+`execution` (chain and live tasks), `queue`, `usage`, `metadata` (`{title}`),
+`agent` (the configuration), `provider` (provider, model, provider session), `entries`,
 `partial`, `progress`, and `approvals`. They are projections of the records
 the runtime writes in the same commits, so they cannot disagree with
 execution. `Runtime.WatchView` delivers, per commit, the operations it
@@ -710,7 +710,7 @@ every connection is admin, which is only acceptable on a private local socket.
 | Role | Methods |
 |---|---|
 | read | `hello`, `runtime.status`, `model.list`, `conversation.list`, `conversation.snapshot`, `conversation.watch`, `watch.cancel`, `conversation.search`, `submission.get`, `submission.wait`, `usage.get`, `recovery.preview`, `approval.get`, `approval.list`, `task.get`, `task.list`, `task.view`, `document.read`, `budget.get`, `memo.get`, `prompt.records`, `prompt.section`, `partial.get` |
-| submit | read plus `conversation.create`, `conversation.submit`, `conversation.configure`, `conversation.compact`, `conversation.reset`, `conversation.fork`, `document.write`, `memo.set` |
+| submit | read plus `conversation.create`, `conversation.submit`, `conversation.configure`, `conversation.rename`, `conversation.compact`, `conversation.reset`, `conversation.fork`, `document.write`, `memo.set` |
 | approve | submit plus `approval.decide` |
 | admin | approve plus `conversation.abort`, `recovery.unblock`, `task.abort`, `task.retry-cleanup`, `budget.set`, `runtime.reload`, `runtime.retain`, `outbox.ack`, `submission.withdraw`, `submission.reorder` |
 
@@ -720,6 +720,25 @@ omitted when creating a new root. It does not change existing roots. With
 `owner` (`{conversation_id, id}`) and `key` it creates an owned child of that
 conversation once per `(owner.id, key)` and returns the existing child on a
 retry; `config` overrides the inherited parent configuration.
+
+Conversations include a `title` string alongside their stable `id`. Titles are
+optional display metadata, stored in the same conversation record on every
+backend (file journal, SQLite, and PostgreSQL). Existing conversations without
+this field read as untitled. No schema migration is required. New roots, forks,
+and owned conversations start untitled. Forks do not inherit a parent's title.
+`conversation.rename` takes `{id, expected_revision, title}` and returns the
+updated conversation. `expected_revision` is the conversation's revision from
+a snapshot or list, not the global store revision. Stale revisions return
+`conflict`. Titles are trimmed, limited to 120 Unicode characters, and must not
+contain control characters. An explicit empty string clears the title, a
+missing or null title is rejected. An unchanged title does not create a commit.
+Renaming does not change workspace identity, provider session, configuration,
+policy revision, or transcript, and is allowed during execution. Lists and
+snapshots include the title, raw watches include the conversation update, and
+view watches include a `metadata` put containing `{title}`. Older view clients
+can ignore the new document. Titles are not injected into model prompts or
+legacy JSONL session exports.
+
 `conversation.submit` accepts `request_id`, `policy` (`queue` or `steer`),
 `when_busy` (`reject` or `steer`), and `kind` (`write` for an entry without
 a model request). Optional `images` is an array of `{mime_type, data}` image

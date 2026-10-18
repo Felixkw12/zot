@@ -35,6 +35,7 @@ import (
 //	conversation.watch   {id, after}                   -> streams event {type:"commit", id, commit} until cancelled
 //	conversation.submit  {id, content, request_id, when_busy} -> Submission
 //	conversation.configure {id, expected_revision, config}   -> Conversation
+//	conversation.rename  {id, expected_revision, title} -> Conversation
 //	conversation.abort   {id}                          -> Run
 //	conversation.compact {id, instructions, keep}      -> Conversation
 //	conversation.reset   {id, handoff}                 -> Conversation
@@ -74,7 +75,7 @@ func (r Role) allows(method string) bool {
 	switch method {
 	case "hello", "runtime.status", "model.list", "conversation.list", "conversation.snapshot", "conversation.watch", "submission.get", "submission.wait", "usage.get", "recovery.preview", "watch.cancel", "approval.get", "approval.list", "task.get", "task.list", "task.view", "document.read", "budget.get", "conversation.search", "memo.get", "prompt.records", "prompt.section", "partial.get", "outbox.list":
 		return true
-	case "conversation.create", "conversation.submit", "conversation.configure", "conversation.compact", "conversation.reset", "conversation.fork", "document.write", "memo.set":
+	case "conversation.create", "conversation.submit", "conversation.configure", "conversation.rename", "conversation.compact", "conversation.reset", "conversation.fork", "document.write", "memo.set":
 		return r == RoleSubmit || r == RoleApprove || r == RoleAdmin
 	case "approval.decide":
 		return r == RoleApprove || r == RoleAdmin
@@ -498,6 +499,19 @@ func (c *hostConn) dispatch(ctx context.Context, req hostRequest) (any, error) {
 		}
 		c.server.Host.Nudge()
 		return s, nil
+	case "conversation.rename":
+		var p struct {
+			ID               string  `json:"id"`
+			ExpectedRevision uint64  `json:"expected_revision"`
+			Title            *string `json:"title"`
+		}
+		if err := params(&p); err != nil {
+			return nil, err
+		}
+		if p.Title == nil {
+			return nil, fmt.Errorf("title required")
+		}
+		return r.Rename(ctx, p.ID, p.ExpectedRevision, *p.Title)
 	case "conversation.configure":
 		var p struct {
 			ID               string      `json:"id"`
