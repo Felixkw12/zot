@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -109,6 +110,90 @@ fi
 
 	if _, _, ok, err := ReadClipboardImagePNG(); err == nil || ok {
 		t.Fatalf("ok = %v, err = %v", ok, err)
+	}
+}
+
+func TestReadClipboardImagePNGBackendFallback(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		xclip   string
+		wantErr []string
+		wantPNG bool
+	}{
+		{
+			name:  "both fail",
+			xclip: "printf 'X11 display unavailable' >&2\nexit 1\n",
+			wantErr: []string{
+				"wl-paste failed", "Wayland socket denied",
+				"xclip failed", "X11 display unavailable",
+			},
+		},
+		{
+			name:    "X11 unavailable",
+			wantErr: []string{"wl-paste failed", "Wayland socket denied"},
+		},
+		{
+			name: "X11 succeeds",
+			xclip: `if [ "$4" = "TARGETS" ]; then
+    printf 'image/png\n'
+else
+    /bin/cat "$CLIPBOARD_IMAGE_FIXTURE"
+fi
+`,
+			wantPNG: true,
+		},
+		{
+			name:  "X11 contains no image",
+			xclip: "printf 'text/plain\\n'\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+			t.Setenv("WAYLAND_DISPLAY", "wayland-1")
+			t.Setenv("DISPLAY", ":0")
+			fixture := filepath.Join(dir, "image.png")
+			if err := os.WriteFile(fixture, testClipboardPNG(t), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CLIPBOARD_IMAGE_FIXTURE", fixture)
+			scripts := map[string]string{
+				"wl-paste": "printf 'Wayland socket denied' >&2\nexit 1\n",
+				"xclip":    tt.xclip,
+			}
+			for name, script := range scripts {
+				if script == "" {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			path, data, ok, err := ReadClipboardImagePNG()
+			if len(tt.wantErr) > 0 {
+				if err == nil {
+					t.Fatal("expected clipboard backend errors")
+				}
+				for _, diagnostic := range tt.wantErr {
+					if !strings.Contains(err.Error(), diagnostic) {
+						t.Errorf("error %q does not contain %q", err, diagnostic)
+					}
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if path != "" || ok != tt.wantPNG {
+				t.Fatalf("path = %q, ok = %v, want PNG = %v", path, ok, tt.wantPNG)
+			}
+			if tt.wantPNG {
+				if w, h := ImageDimensions(data); w != 2 || h != 2 {
+					t.Fatalf("image dimensions = %dx%d", w, h)
+				}
+			} else if data != nil {
+				t.Fatal("unexpected image data")
+			}
+		})
 	}
 }
 

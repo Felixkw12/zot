@@ -1234,6 +1234,8 @@ Slash commands also work while the agent is busy. Non-destructive ones (`/help`,
 | `ctrl+1` ... `ctrl+9` | Switch to the model bound to that quick-model slot (configured in `/settings` -> model shortcuts). No-op while a turn is running. |
 | `@` | Open the file picker. Browse files and directories in the working directory. |
 
+On Linux, image paste tries Wayland before X11 when both display variables are set. If all available image clipboard backends fail, the error includes each backend's diagnostic. Successful fallback does not display a warning.
+
 ### File picker (`@`)
 
 | Key | Action |

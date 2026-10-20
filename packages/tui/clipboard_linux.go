@@ -19,16 +19,14 @@ type linuxImageClipboardBackend struct {
 // clipboard. Small command-line clients preserve zot's CGO-free build.
 func ReadClipboardImagePNG() (string, []byte, bool, error) {
 	backends := linuxImageClipboardBackends()
-	var lastErr error
-	found := false
+	var backendErrors []error
 	for _, backend := range backends {
 		data, ok, err := readLinuxClipboardImage(backend)
 		if errors.Is(err, errClipboardImageCommandUnavailable) {
 			continue
 		}
-		found = true
 		if err != nil {
-			lastErr = err
+			backendErrors = append(backendErrors, err)
 			continue
 		}
 		if !ok {
@@ -40,8 +38,8 @@ func ReadClipboardImagePNG() (string, []byte, bool, error) {
 		}
 		return "", pngData, true, nil
 	}
-	if found && lastErr != nil {
-		return "", nil, false, fmt.Errorf("read image clipboard: %w", lastErr)
+	if err := errors.Join(backendErrors...); err != nil {
+		return "", nil, false, fmt.Errorf("read image clipboard: %w", err)
 	}
 	return "", nil, false, nil
 }
