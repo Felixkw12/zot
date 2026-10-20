@@ -2,6 +2,10 @@ package provider
 
 import "strings"
 
+// miniMaxThinkingID marks MiniMax replay data, not a provider-issued item ID.
+// Other wire formats must not interpret its signature as their own metadata.
+const miniMaxThinkingID = "minimax-thinking"
+
 // miniMaxTextID only identifies the built-in MiniMax routes. Custom providers
 // and explicit user catalog entries retain their own model selection policy.
 func miniMaxTextID(m Model) string {

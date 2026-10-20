@@ -211,7 +211,10 @@ MiniMax defaults to `MiniMax-M3.1-Flash` in both direct regions, with
 `MiniMax-M3` as the other ordinary text choice. Saved legacy model IDs and
 explicit `models.json` entries still resolve. Flash always uses adaptive
 thinking: its effort levels are `low`, `medium`, `high`, `xhigh`, and `max`;
-an off or unset setting uses `max`. M3 retains its separate on/off behavior.
+an off or unset setting uses `max`, subject to explicit `reasoningLevelMap`
+overrides. M3 retains its separate on/off behavior. MiniMax thinking blocks
+are preserved for MiniMax replay, but omitted when switching to OpenAI
+Responses, Codex, or Gemini because their reasoning metadata is incompatible.
 The verified gateway Flash IDs are `minimax/minimax-m3.1-flash:free` on
 OpenRouter and `minimax-m3.1-flash-free` on OpenCode Zen. Other gateway
 MiniMax choices are limited to M3 where available; unrelated models remain

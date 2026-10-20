@@ -440,7 +440,7 @@ func convertAnthContent(blocks []Content, renameTools, preserveThinking bool) []
 	for _, b := range blocks {
 		switch v := b.(type) {
 		case ReasoningBlock:
-			if preserveThinking && v.ID == "minimax-thinking" {
+			if preserveThinking && v.ID == miniMaxThinkingID {
 				out = append(out, struct {
 					Type      string `json:"type"`
 					Thinking  string `json:"thinking"`
@@ -655,7 +655,7 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 			be := blocks[idx]
 			switch be.kind {
 			case "thinking":
-				content = append(content, ReasoningBlock{ID: "minimax-thinking", Summary: be.textBuf.String(), Encrypted: be.signature.String()})
+				content = append(content, ReasoningBlock{ID: miniMaxThinkingID, Summary: be.textBuf.String(), Encrypted: be.signature.String()})
 			case "text":
 				if be.textBuf.Len() > 0 {
 					content = append(content, TextBlock{Text: be.textBuf.String()})

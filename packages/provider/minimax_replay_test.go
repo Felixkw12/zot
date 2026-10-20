@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,7 @@ data: {}
 				t.Fatalf("lost thinking or tool: %+v", answer)
 			}
 			req.Messages = append(req.Messages, answer, Message{Role: RoleTool, Content: []Content{ToolResultBlock{CallID: "call-1", Content: []Content{TextBlock{Text: "done"}}}}})
+			assertMiniMaxThinkingNotReplayed(t, req.Messages)
 			events, err = c.Stream(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)
@@ -91,6 +93,51 @@ data: {}
 			}
 			if requests != 2 {
 				t.Fatalf("requests %d", requests)
+			}
+		})
+	}
+}
+
+func assertMiniMaxThinkingNotReplayed(t *testing.T, messages []Message) {
+	t.Helper()
+	for _, route := range []struct {
+		name, model string
+		client      func(string) Client
+	}{
+		{"codex", "gpt-5.5", func(url string) Client { return NewOpenAICodex("test-key", "test-account", url) }},
+		{"responses", "gpt-5.5", func(url string) Client { return NewOpenAIResponses("test-key", url) }},
+		{"gemini", "gemini-2.5-pro", func(url string) Client { return NewGemini("test-key", url) }},
+	} {
+		t.Run("switch/"+route.name, func(t *testing.T) {
+			bodies := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				bodies <- string(body)
+				w.Header().Set("Content-Type", "text/event-stream")
+			}))
+			defer server.Close()
+			events, err := route.client(server.URL).Stream(context.Background(), Request{Model: route.model, Messages: messages})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for event := range events {
+				if done, ok := event.(EventDone); ok && done.Err != nil {
+					t.Fatal(done.Err)
+				}
+			}
+			body := <-bodies
+			for _, foreign := range []string{"minimax-thinking", "first second", `"sig"`} {
+				if strings.Contains(body, foreign) {
+					t.Errorf("foreign thinking %q leaked into %s request", foreign, route.name)
+				}
+			}
+			for _, retained := range []string{`"hello"`, `"test"`, `"done"`} {
+				if !strings.Contains(body, retained) {
+					t.Errorf("conversation content %s lost on provider switch", retained)
+				}
 			}
 		})
 	}

@@ -121,7 +121,7 @@ func hasReasoningLevelOverride(model Model, level string) bool {
 func ClampReasoningForModel(model Model, level string) string {
 	normalized := NormalizeReasoning(level)
 	if miniMaxFlash(model) && normalized == "" {
-		return "max" // Flash cannot disable thinking; use its documented default.
+		normalized = "max" // Apply user mappings and restrictions to Flash's default too.
 	}
 	available := AvailableReasoningLevels(model)
 	if mapped, overridden := model.ReasoningLevelMap[normalized]; overridden {
