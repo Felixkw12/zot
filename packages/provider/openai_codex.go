@@ -281,6 +281,10 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			for _, c := range msg.Content {
 				switch v := c.(type) {
 				case ReasoningBlock:
+					// MiniMax signatures and replay IDs are not Responses items.
+					if v.ID == miniMaxThinkingID {
+						continue
+					}
 					item := codexReasoningItem{
 						Type:             "reasoning",
 						ID:               v.ID,

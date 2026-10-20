@@ -303,6 +303,10 @@ func convertGemAssistantParts(blocks []Content, functionsEnabled bool) []gemPart
 	for _, b := range blocks {
 		switch v := b.(type) {
 		case ReasoningBlock:
+			// MiniMax signatures cannot be replayed as Gemini thought signatures.
+			if v.ID == miniMaxThinkingID {
+				continue
+			}
 			if v.Encrypted != "" || v.Summary != "" {
 				parts = append(parts, gemPart{
 					Text:             v.Summary,

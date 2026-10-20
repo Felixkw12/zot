@@ -116,6 +116,27 @@ func sortedModels(in []provider.Model) []provider.Model {
 		}
 		return out[i].ID < out[j].ID
 	})
+	// Preserve the MiniMax recommendation after the alphabetical UI sort.
+	// Swap only the two family choices so unrelated models keep their positions.
+	for i, m := range out {
+		var m3 string
+		switch m.Provider + "/" + m.ID {
+		case "minimax/MiniMax-M3.1-Flash", "minimax-cn/MiniMax-M3.1-Flash":
+			m3 = "MiniMax-M3"
+		case "openrouter/minimax/minimax-m3.1-flash:free":
+			m3 = "minimax/minimax-m3"
+		case "opencode/minimax-m3.1-flash-free":
+			m3 = "minimax-m3"
+		default:
+			continue
+		}
+		for j := 0; j < i; j++ {
+			if out[j].Provider == m.Provider && out[j].ID == m3 {
+				out[j], out[i] = out[i], out[j]
+				break
+			}
+		}
+	}
 	return out
 }
 

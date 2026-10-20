@@ -208,7 +208,7 @@ func defaultModelForProvider(prov string) string {
 	case "xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp":
 		return "mimo-v2.5"
 	case "minimax", "minimax-cn":
-		return "MiniMax-M2.7"
+		return "MiniMax-M3.1-Flash"
 	case "fireworks":
 		return "accounts/fireworks/models/kimi-k2p6"
 	case "vercel-ai-gateway":

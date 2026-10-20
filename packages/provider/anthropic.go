@@ -232,7 +232,7 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 
 	reasoning := ClampReasoningForModel(m, req.Reasoning)
 	adaptive := usesAdaptiveThinking(m)
-	adaptiveEffort := adaptive && !m.AdaptiveThinkingCompat
+	adaptiveEffort := adaptive && (!m.AdaptiveThinkingCompat || miniMaxFlash(m))
 
 	out := &anthRequest{
 		Model:     req.Model,
@@ -354,21 +354,22 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 	req.Messages = RepairOrphanedToolResults(req.Messages)
 	for _, msg := range req.Messages {
 		renameTools := c.oauthTok != ""
+		preserveThinking := miniMaxFlash(m) || miniMaxTextID(m) == "minimax-m3"
 		switch msg.Role {
 		case RoleUser:
 			out.Messages = append(out.Messages, anthMessage{
 				Role:    "user",
-				Content: convertAnthContent(msg.Content, renameTools),
+				Content: convertAnthContent(msg.Content, renameTools, preserveThinking),
 			})
 		case RoleTool:
 			out.Messages = append(out.Messages, anthMessage{
 				Role:    "user",
-				Content: convertAnthContent(msg.Content, renameTools),
+				Content: convertAnthContent(msg.Content, renameTools, preserveThinking),
 			})
 		case RoleAssistant:
 			out.Messages = append(out.Messages, anthMessage{
 				Role:    "assistant",
-				Content: convertAnthContent(filterAnthAssistantContent(msg.Content), renameTools),
+				Content: convertAnthContent(filterAnthAssistantContent(msg.Content), renameTools, preserveThinking),
 			})
 		}
 	}
@@ -434,10 +435,18 @@ func filterAnthAssistantContent(blocks []Content) []Content {
 	return filtered
 }
 
-func convertAnthContent(blocks []Content, renameTools bool) []interface{} {
+func convertAnthContent(blocks []Content, renameTools, preserveThinking bool) []interface{} {
 	out := make([]interface{}, 0, len(blocks))
 	for _, b := range blocks {
 		switch v := b.(type) {
+		case ReasoningBlock:
+			if preserveThinking && v.ID == miniMaxThinkingID {
+				out = append(out, struct {
+					Type      string `json:"type"`
+					Thinking  string `json:"thinking"`
+					Signature string `json:"signature,omitempty"`
+				}{"thinking", v.Summary, v.Encrypted})
+			}
 		case TextBlock:
 			if v.Text == "" {
 				continue
@@ -603,6 +612,7 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 	if model.ID == "" {
 		model, _ = FindModel("", req.Model)
 	}
+	preserveThinking := miniMaxFlash(model) || miniMaxTextID(model) == "minimax-m3"
 	out <- EventStart{Model: req.Model, Provider: c.Name()}
 
 	raw := make(chan sseEvent, 16)
@@ -613,10 +623,11 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 	// interleaved order the model emitted them in (text may come
 	// before OR after tool_use; mixing both happens frequently).
 	type blockEntry struct {
-		kind     string // "text" | "tool_use"
-		textBuf  strings.Builder
-		toolCall ToolCallBlock
-		toolArgs strings.Builder
+		kind      string // "text" | "tool_use"
+		textBuf   strings.Builder
+		toolCall  ToolCallBlock
+		toolArgs  strings.Builder
+		signature strings.Builder
 	}
 	var (
 		blocks     = map[int]*blockEntry{}
@@ -643,6 +654,8 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 		for _, idx := range blockOrder {
 			be := blocks[idx]
 			switch be.kind {
+			case "thinking":
+				content = append(content, ReasoningBlock{ID: miniMaxThinkingID, Summary: be.textBuf.String(), Encrypted: be.signature.String()})
 			case "text":
 				if be.textBuf.Len() > 0 {
 					content = append(content, TextBlock{Text: be.textBuf.String()})
@@ -690,11 +703,13 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 					_ = json.Unmarshal(b, &idx)
 				}
 				var block struct {
-					Type  string          `json:"type"`
-					ID    string          `json:"id"`
-					Name  string          `json:"name"`
-					Text  string          `json:"text"`
-					Input json.RawMessage `json:"input"`
+					Type      string          `json:"type"`
+					ID        string          `json:"id"`
+					Name      string          `json:"name"`
+					Text      string          `json:"text"`
+					Input     json.RawMessage `json:"input"`
+					Thinking  string          `json:"thinking"`
+					Signature string          `json:"signature"`
 				}
 				if b, ok := payload["content_block"]; ok {
 					_ = json.Unmarshal(b, &block)
@@ -712,7 +727,11 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				case "text":
 					registerBlock(idx, "text")
 				case "thinking":
-					// not surfaced
+					if preserveThinking {
+						be := registerBlock(idx, "thinking")
+						be.textBuf.WriteString(block.Thinking)
+						be.signature.WriteString(block.Signature)
+					}
 				}
 			case "content_block_delta":
 				var idx int
@@ -724,6 +743,7 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 					Text        string `json:"text"`
 					PartialJSON string `json:"partial_json"`
 					Thinking    string `json:"thinking"`
+					Signature   string `json:"signature"`
 				}
 				if b, ok := payload["delta"]; ok {
 					_ = json.Unmarshal(b, &d)
@@ -740,7 +760,13 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 						out <- EventToolArgs{ID: be.toolCall.ID, Delta: d.PartialJSON}
 					}
 				case "thinking_delta":
-					// Not surfaced in v1.
+					if be, ok := blocks[idx]; ok && be.kind == "thinking" {
+						be.textBuf.WriteString(d.Thinking)
+					}
+				case "signature_delta":
+					if be, ok := blocks[idx]; ok && be.kind == "thinking" {
+						be.signature.WriteString(d.Signature)
+					}
 				}
 			case "content_block_stop":
 				var idx int

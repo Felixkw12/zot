@@ -46,7 +46,7 @@ func defaultReasoningLevels(model Model) []string {
 	id := strings.ToLower(model.ID)
 	// Opus 5.5 and Sonnet 5.5 always use adaptive thinking, including at
 	// their lowest effort.
-	if alwaysOnAdaptiveThinking(id) {
+	if alwaysOnAdaptiveThinking(id) || miniMaxFlash(model) {
 		return []string{"low", "medium", "high", "xhigh", "max"}
 	}
 	if (model.Provider == "google" || model.Provider == "google-vertex") && strings.Contains(id, "gemini-3") {
@@ -120,6 +120,9 @@ func hasReasoningLevelOverride(model Model, level string) bool {
 // for the active model. Ties prefer the higher level.
 func ClampReasoningForModel(model Model, level string) string {
 	normalized := NormalizeReasoning(level)
+	if miniMaxFlash(model) && normalized == "" {
+		normalized = "max" // Apply user mappings and restrictions to Flash's default too.
+	}
 	available := AvailableReasoningLevels(model)
 	if mapped, overridden := model.ReasoningLevelMap[normalized]; overridden {
 		target := NormalizeReasoning(mapped)

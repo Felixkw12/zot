@@ -631,9 +631,22 @@ func filterAvailableModels(models []Model) []Model {
 	out := models[:0]
 	for _, m := range models {
 		allowed, restricted := modelAvailability[m.Provider]
-		if !restricted || allowed[m.ID] {
-			out = append(out, m)
+		if (restricted && !allowed[m.ID]) || !ordinaryMiniMaxChoice(m) {
+			continue
 		}
+		// Prefer Flash within MiniMax choices without reordering unrelated models.
+		insert := len(out)
+		if miniMaxFlash(m) {
+			for i, existing := range out {
+				if existing.Provider == m.Provider && miniMaxTextID(existing) != "" {
+					insert = i
+					break
+				}
+			}
+		}
+		out = append(out, m)
+		copy(out[insert+1:], out[insert:len(out)-1])
+		out[insert] = m
 	}
 	return out
 }

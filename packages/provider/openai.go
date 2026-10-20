@@ -207,6 +207,7 @@ type oaiRequest struct {
 	MaxTokens        *int              `json:"max_tokens,omitempty"`
 	MaxCompletionTok *int              `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
+	Thinking         *anthThinking     `json:"thinking,omitempty"`
 	SessionID        string            `json:"session_id,omitempty"`
 	MaxToolCalls     int               `json:"max_tool_calls,omitempty"`
 }
@@ -245,6 +246,13 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		}
 	}
 
+	if (c.Name() == "minimax" || c.Name() == "minimax-cn") && m.ID == "MiniMax-M3" {
+		mode := "adaptive"
+		if reasoning == "" {
+			mode = "disabled"
+		}
+		out.Thinking = &anthThinking{Type: mode}
+	}
 	maxTok := req.MaxTokens
 	if maxTok <= 0 {
 		maxTok = m.MaxOutput
@@ -309,6 +317,11 @@ func (c *openaiClient) buildRequest(req Request) (*oaiRequest, error) {
 		if c.Name() == "yolo-auto" && effort == "minimum" {
 			// The advertised wire value is minimal, not zot's UI spelling.
 			effort = "minimal"
+		}
+		if miniMaxFlash(m) {
+			effort = reasoning // Preserve xhigh/max; Flash does not accept none.
+		} else if miniMaxTextID(m) == "minimax-m3" {
+			effort = "" // M3 does not implement Flash's effort control.
 		}
 		if effort != "" {
 			out.ReasoningEffort = effort
