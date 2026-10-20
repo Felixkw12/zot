@@ -207,6 +207,16 @@ show instructions and should be configured with environment variables.
 | Cloudflare AI Gateway | `CLOUDFLARE_API_KEY` | `cloudflare-ai-gateway` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 
+MiniMax defaults to `MiniMax-M3.1-Flash` in both direct regions, with
+`MiniMax-M3` as the other ordinary text choice. Saved legacy model IDs and
+explicit `models.json` entries still resolve. Flash always uses adaptive
+thinking: its effort levels are `low`, `medium`, `high`, `xhigh`, and `max`;
+an off or unset setting uses `max`. M3 retains its separate on/off behavior.
+The verified gateway Flash IDs are `minimax/minimax-m3.1-flash:free` on
+OpenRouter and `minimax-m3.1-flash-free` on OpenCode Zen. Other gateway
+MiniMax choices are limited to M3 where available; unrelated models remain
+unchanged. Gateway limits follow each gateway's catalog.
+
 OpenCode Zen routes catalog models through Chat Completions or Responses.
 OpenCode Go also supports Anthropic Messages models. Every Go wire sends
 `x-opencode-session` with a stable conversation ID. With `--no-session`, zot
