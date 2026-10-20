@@ -119,7 +119,8 @@ type View struct {
 	// the box top edge without having to look back at the assistant
 	// message that originated the call. Rebuilt on each Build().
 	toolCallLabels  map[string]string
-	Streaming       string // current assistant text delta
+	toolSources     map[string]string // codemode source by call ID, rebuilt on Build
+	Streaming       string            // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
 
@@ -521,6 +522,7 @@ func (v *View) refreshToolPaths() {
 	v.toolPaths = map[string]string{}
 	v.toolStartLines = map[string]int{}
 	v.toolCallLabels = map[string]string{}
+	v.toolSources = map[string]string{}
 	for _, m := range v.Messages {
 		for _, c := range m.Content {
 			if tc, ok := c.(provider.ToolCallBlock); ok {
@@ -531,6 +533,7 @@ func (v *View) refreshToolPaths() {
 					v.toolStartLines[tc.ID] = off
 				}
 				v.toolCallLabels[tc.ID] = tc.Name + " " + ShortArgs(tc.Name, tc.Arguments)
+				v.toolSources[tc.ID] = codemodeSource(tc.Name, string(tc.Arguments))
 			}
 		}
 		for _, calls := range m.NestedToolCalls() {
@@ -538,6 +541,7 @@ func (v *View) refreshToolPaths() {
 				v.toolPaths[call.ID] = pathFromToolArgs(call.Args)
 				v.toolStartLines[call.ID] = offsetFromToolArgs(call.Args)
 				v.toolCallLabels[call.ID] = call.Name + " " + ShortArgs(call.Name, call.Args)
+				v.toolSources[call.ID] = codemodeSource(call.Name, string(call.Args))
 			}
 		}
 	}
@@ -554,6 +558,11 @@ func (v *View) renderMessageCached(m provider.Message, width int, turnOpen bool)
 		width:     width,
 		expandAll: v.ExpandAll,
 		turnOpen:  turnOpen,
+	}
+	for _, content := range m.Content {
+		if result, ok := content.(provider.ToolResultBlock); ok {
+			key.hash = fnv64aWrite(key.hash, []byte(v.toolSources[result.CallID]))
+		}
 	}
 	if v.renderCache != nil {
 		if lines, ok := v.renderCache[key]; ok {
@@ -826,7 +835,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 					if tr.IsError {
 						lines = append(lines, toolBodyLine(v.Theme, v.Theme.FG256(color, "  error"), width, v.CompactMode))
 					}
-					for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
+					for _, line := range v.renderToolResultWithSource(tr.Content, width, color, path, startLine, v.toolSources[tr.CallID]) {
 						_, stripped := parseImageFootprint(line)
 						lines = append(lines, toolBodyLine(v.Theme, stripped, width, v.CompactMode))
 					}
@@ -841,7 +850,7 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 				if tr.IsError {
 					lines = append(lines, toolBoxSide(v.Theme, v.Theme.FG256(color, "  error"), width))
 				}
-				for _, line := range v.renderToolResultContent(tr.Content, width, color, path, startLine) {
+				for _, line := range v.renderToolResultWithSource(tr.Content, width, color, path, startLine, v.toolSources[tr.CallID]) {
 					// Image-footprint rows (the escape row, the blank
 					// reservation rows beneath it, and the gap row
 					// before the metadata caption) are tagged with the
@@ -883,6 +892,9 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// the target file as soon as it's known, even before the full
 	// JSON arrived.
 	arg := tc.Args
+	if source := codemodeSource(tc.Name, tc.RawJSONBuf); source != "" {
+		arg = codemodeSummary(source)
+	}
 	if arg == "" && tc.LivePath != "" {
 		arg = tc.LivePath
 	}
@@ -897,11 +909,13 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 			bodyText = tc.Progress
 		}
 		var body []string
-		if bodyText != "" {
-			color := v.Theme.ToolOut
-			if tc.Error {
-				color = v.Theme.Error
-			}
+		color := v.Theme.ToolOut
+		if tc.Error {
+			color = v.Theme.Error
+		}
+		if tc.Name == "codemode" && (tc.Done || bodyText != "" || len(tc.ResultContent) > 0) {
+			body = v.renderToolCallResult(tc, bodyText, width, color)
+		} else if bodyText != "" {
 			bodyWidth := toolBoxBodyRenderWidth(width)
 			if v.FlatTools || v.CompactMode {
 				bodyWidth = flatToolBodyRenderWidth(width)
@@ -926,7 +940,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// tool_use JSON before zot has executed the tool, so keying this on
 	// tc.Streaming makes write/edit boxes collapse for a moment between
 	// EvToolUseEnd and confirmation or EvToolResult.
-	if tc.Preview == "" && tc.Result == "" && tc.Progress == "" {
+	if tc.Preview == "" && tc.Result == "" && tc.Progress == "" && (!tc.Done || tc.Name != "codemode") {
 		if body := v.renderLiveToolBody(tc, width); len(body) > 0 {
 			// Pad the live preview up to the call's high-water height so
 			// it never shrinks mid-stream (e.g. between edit 1 and the
@@ -978,7 +992,7 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 	// Finished tool call with no body: just the labelled top edge
 	// directly closed by the bottom. Avoids a blank interior row
 	// for no-output tools.
-	if bodyText == "" && len(tc.ResultContent) == 0 {
+	if bodyText == "" && len(tc.ResultContent) == 0 && codemodeSource(tc.Name, tc.RawJSONBuf) == "" {
 		if v.FlatTools || v.CompactMode {
 			if v.CompactMode {
 				lines = append(lines, compactToolBlank(v.Theme, width))
@@ -1036,6 +1050,13 @@ func (v *View) renderToolCall(tc ToolCallView, width int) []string {
 
 // renderToolCallResult preserves per-block display hints in completed live calls.
 func (v *View) renderToolCallResult(tc ToolCallView, text string, width, color int) []string {
+	if source := codemodeSource(tc.Name, tc.RawJSONBuf); source != "" {
+		blocks := tc.ResultContent
+		if len(blocks) == 0 && text != "" {
+			blocks = []provider.Content{provider.TextBlock{Text: text}}
+		}
+		return v.renderToolResultWithSource(blocks, width, color, tc.LivePath, 1, source)
+	}
 	if len(tc.ResultContent) > 0 {
 		return v.renderToolResultContent(tc.ResultContent, width, color, tc.LivePath, 1)
 	}
@@ -1063,6 +1084,7 @@ func (v *View) renderLiveToolResult(text string, width, color int, sourcePath st
 //     the user can see which of a multi-edit batch is in progress.
 //   - bash:  shows the full command as soon as the JSON args are known,
 //     before stdout/stderr has arrived, so long-running commands are legible.
+//   - codemode: shows the partial code field as highlighted JavaScript.
 //
 // Anything else returns nil and only the tool-call header shows.
 func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
@@ -1073,6 +1095,8 @@ func (v *View) renderLiveToolBody(tc ToolCallView, width int) []string {
 // can select their preview before applying borders or background padding.
 func (v *View) renderLiveToolContent(tc ToolCallView, width int) []string {
 	switch tc.Name {
+	case "codemode":
+		return v.renderCodemodeSource(codemodeSource(tc.Name, tc.RawJSONBuf), width)
 	case "write", "Write":
 		partial, ok, _ := ExtractPartialStringField(tc.RawJSONBuf, "content")
 		if !ok || partial == "" {
@@ -1606,6 +1630,10 @@ func trimLeadingSpaces(s string, n int) string {
 // inline when the terminal supports a protocol, else as a text
 // placeholder with dimensions.
 func (v *View) renderToolResultContent(blocks []provider.Content, width, color int, sourcePath string, startLine int) []string {
+	return v.renderToolResultWithSource(blocks, width, color, sourcePath, startLine, "")
+}
+
+func (v *View) renderToolResultWithSource(blocks []provider.Content, width, color int, sourcePath string, startLine int, source string) []string {
 	var body []string
 	hasImage := false
 	for _, b := range blocks {
@@ -1626,6 +1654,21 @@ func (v *View) renderToolResultContent(blocks []provider.Content, width, color i
 			hasImage = true
 			body = append(body, v.renderImageBlock(bb, width)...)
 		}
+	}
+	// Fully collapsed calls retain their result preview rather than the last
+	// source line. ExpandAll restores both sections.
+	if source != "" && (!v.CollapseToolCall || v.ExpandAll) {
+		if len(body) > 0 {
+			body = append(body, "")
+		}
+		bodyWidth := toolBoxBodyRenderWidth(width)
+		if v.FlatTools || v.CompactMode {
+			bodyWidth = flatToolBodyRenderWidth(width)
+		}
+		for _, line := range wrapANSILine(v.Theme.FG256(v.Theme.Muted, "Script (JavaScript)"), max(1, bodyWidth-4)) {
+			body = append(body, "    "+line)
+		}
+		body = append(body, v.renderCodemodeSource(source, width)...)
 	}
 	return v.collapseToolBody(body, hasImage)
 }
@@ -2392,6 +2435,9 @@ func toolArgWidth() int {
 // call is announced, so the live overlay's header matches what
 // the finalised transcript will later render.
 func ShortArgs(tool string, raw json.RawMessage) string {
+	if tool == "codemode" {
+		return codemodeSummary(codemodeSource(tool, string(raw)))
+	}
 	width := toolArgWidth()
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {

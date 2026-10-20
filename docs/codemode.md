@@ -2,6 +2,8 @@
 
 Codemode runs JavaScript to orchestrate the session's tools, filter intermediate results, and call classifier or image models. Only explicit output reaches the chat model.
 
+In the interactive TUI, codemode headers show an abbreviated script preview. JavaScript is syntax-highlighted while the script streams and appears in a labeled section below the completed result, including when a session is reopened. Results come first so long scripts do not displace them from the normal preview. Press `ctrl+o` to expand the full result and script. With fully collapsed tool calls, the result preview is retained until expanded. This is display-only and does not add source to tool results sent to the model.
+
 ## Enable
 
 ```sh
