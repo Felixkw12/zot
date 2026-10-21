@@ -51,6 +51,11 @@ The interactive TUI can attach to the same host:
 zot --continuous ./continuous-store/host.sock --continuous-workspace main
 ```
 
+`--continuous-conversation <id>` attaches to one existing conversation by ID
+instead, such as a fork or an owned subagent. It never creates or
+reconfigures a conversation, cannot be combined with
+`--continuous-workspace`, and fails when the ID is unknown.
+
 Prompts are submitted to the host, committed entries are rendered as they
 land, the status bar shows `attached: host.sock`, and closing the TUI detaches
 without cancelling the run. Session files are disabled: the store is the
@@ -819,8 +824,8 @@ zot continuous serve --store ~/.zot-store --web 127.0.0.1:7787
 `zot continuous attach` is the reference client: `--socket` or `--address`,
 `--token` or `--token-file`, `--workspace <id>` or `--conversation <id>`, a
 prompt and/or `--follow`, and `--json`. `zot --continuous <address>` attaches
-the interactive TUI with `--continuous-workspace`, `--continuous-token`, or
-`--continuous-token-file`; it rejects print, stream, JSON, RPC, and session
+the interactive TUI with `--continuous-workspace`, `--continuous-conversation`,
+`--continuous-token`, or `--continuous-token-file`; it rejects print, stream, JSON, RPC, and session
 flags. Go clients use `continuous.Dial`, `Client.Call`, `Client.Watch`, and
 `AttachedDriver`.
 

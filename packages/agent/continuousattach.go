@@ -39,7 +39,16 @@ func attachContinuous(ctx context.Context, args Args, r Resolved, ag *core.Agent
 		config.Model = r.Model
 	}
 	var conv continuous.Conversation
-	if err := client.CallInto(ctx, "conversation.create", map[string]any{"workspace": workspace, "config": config}, &conv); err != nil {
+	if args.ContinuousConversation != "" {
+		// An explicit conversation must already exist. It is never created
+		// or reconfigured: attaching only observes and submits.
+		var snap continuous.ConversationSnapshot
+		if err := client.CallInto(ctx, "conversation.snapshot", map[string]any{"id": args.ContinuousConversation, "limit": 1}, &snap); err != nil {
+			client.Close()
+			return nil, "", "", nil, fmt.Errorf("open conversation %s on host: %w", args.ContinuousConversation, err)
+		}
+		conv = snap.Conversation
+	} else if err := client.CallInto(ctx, "conversation.create", map[string]any{"workspace": workspace, "config": config}, &conv); err != nil {
 		client.Close()
 		return nil, "", "", nil, fmt.Errorf("open workspace conversation on host: %w", err)
 	}
