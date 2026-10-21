@@ -651,13 +651,28 @@ func (c *openaiClient) Stream(ctx context.Context, req Request) (<-chan Event, e
 		return httpReq, nil
 	}
 
-	resp, err := doStreamWithRetry(ctx, c.http, newReq)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", c.Name(), err)
-	}
-	if resp.StatusCode != http.StatusOK {
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		resp, err = doStreamWithRetry(ctx, c.http, newReq)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", c.Name(), err)
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		// LM Studio and other local APIs can reject valid PNG/WebP data
+		// URLs as invalid base64. Retry this specific pre-stream rejection
+		// once with actual JPEG bytes, including images from old sessions.
+		if attempt == 0 && ctx.Err() == nil && resp.StatusCode == http.StatusBadRequest &&
+			strings.Contains(string(b), "'url' field must be a base64 encoded image") && wire.retryImagesAsJPEG() {
+			body, err = json.Marshal(wire)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
 		return nil, fmt.Errorf("%s: http %d: %s", c.Name(), resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 

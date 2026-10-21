@@ -1021,6 +1021,15 @@ process. `/model` reports discovery failures without blocking other providers.
 Use `/logout lmstudio` to remove the connection and stop discovery.
 Background refresh never executes API-key commands.
 
+Some local OpenAI-compatible endpoints reject PNG or WebP images with HTTP 400
+and the message `'url' field must be a base64 encoded image`. For this specific
+rejection, zot retries once after converting decodable PNG/WebP images to JPEG.
+This also applies to images replayed from existing sessions. The saved images
+remain unchanged. The fallback is lossy, preserves dimensions, and composites
+transparency onto white. Conversion is limited to 32 MiB of source bytes and
+25 million pixels per image. Other errors are returned normally, and this does
+not add support for HEIC, JPEG 2000, or JPEG XL.
+
 ### Local models with llama.cpp router mode
 
 zot can connect to a recent [llama.cpp](https://github.com/ggml-org/llama.cpp) router, manage its GGUF files, and use loaded models through the router's OpenAI-compatible inference API. This is separate from Ollama. An Ollama server normally listens on port `11434` and should use zot's `ollama` provider instead.
