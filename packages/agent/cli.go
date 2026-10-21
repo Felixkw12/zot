@@ -730,7 +730,17 @@ func refreshAgentToolsAndPrompt(args Args, sharedSandbox *tools.Sandbox, extTool
 	if mutateRegistry != nil {
 		reg = mutateRegistry(reg)
 	}
-	ag.SetTools(reg)
+	ag.UpdateTools(func(current core.Registry) core.Registry {
+		// Telegram tools are owned by the live bridge, not Resolve. Keep
+		// their sender instances, but only if still connected at commit.
+		for name, tool := range current {
+			switch tool.(type) {
+			case *tools.TelegramSendImageTool, *tools.TelegramSendFileTool:
+				reg[name] = tool
+			}
+		}
+		return reg
+	})
 	ag.SetSystem(resolved.SystemPrompt)
 }
 

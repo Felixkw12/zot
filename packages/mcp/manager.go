@@ -47,8 +47,6 @@ type Manager struct {
 	// onChange runs, without locks held, after the catalog changed outside
 	// a Reload, for example when a server announced new tools.
 	onChange func()
-	// generation invalidates refreshes started before a Reload or Close.
-	generation uint64
 }
 
 type server struct {
@@ -60,7 +58,8 @@ type server struct {
 	client   *client.Client
 	process  *exec.Cmd
 	cancel   context.CancelFunc
-	err      error
+	// err is protected by Manager.mu after the server is published.
+	err error
 	// lost is set when an established connection drops, for example
 	// when a stdio server exits. Calls and the manager read it.
 	lost    atomic.Bool
@@ -76,8 +75,11 @@ type server struct {
 	http *retryTransport
 	// listed is when the tool list was last read, in UnixNano.
 	listed atomic.Int64
-	// relisting prevents overlapping reads of the same server's list.
-	relisting atomic.Bool
+	// relistMu coalesces notifications received during a list request.
+	relistMu      sync.Mutex
+	relisting     bool
+	relistPending bool
+	relistNotify  bool
 	// resources reports that the server offers MCP resources.
 	resources bool
 	// offersTools gates discovery and polling on the negotiated capability.
@@ -85,7 +87,8 @@ type server struct {
 	// listChanged is the negotiated tool-list notification capability.
 	listChanged bool
 	// authMetadataURL comes from the server's authorization challenge.
-	// It is validated by the OAuth handler before discovery uses it.
+	// It is protected by Manager.mu after publication and validated by
+	// the OAuth handler before discovery uses it.
 	authMetadataURL string
 }
 
@@ -191,6 +194,7 @@ func (m *Manager) start(ctx context.Context, s *server) error {
 	// challenge. Enabling the OAuth transport without a token would fail
 	// locally before receiving the advertised metadata URL, even when an
 	// explicit OAuth configuration exists.
+	s.lost.Store(false)
 	useOAuth := oauthEnabled(s.cfg) && m.signedIn(s.name, s.cfg)
 	c, definitions, err := m.connect(ctx, s, useOAuth)
 	s.authMetadataURL = authorizationMetadataURL(err)
@@ -199,7 +203,6 @@ func (m *Manager) start(ctx context.Context, s *server) error {
 	}
 	s.client, s.err, s.defs = c, err, nil
 	s.tools, s.count = nil, 0
-	s.lost.Store(false)
 	if errors.Is(err, ErrSignInRequired) {
 		return fmt.Errorf("MCP server %q: sign-in required, open /mcp and press l", s.name)
 	}
@@ -301,7 +304,6 @@ func (m *Manager) Reconnect(ctx context.Context, name string) error {
 		delete(m.servers, name)
 		m.invalid[name] = reason
 		m.invalidSources[name] = loaded.sources[name]
-		m.generation++
 		m.rebuildLocked()
 		m.mu.Unlock()
 		return fmt.Errorf("MCP server %q: %s", name, reason)
@@ -315,7 +317,6 @@ func (m *Manager) Reconnect(ctx context.Context, name string) error {
 	m.servers[name] = fresh
 	delete(m.invalid, name)
 	delete(m.invalidSources, name)
-	m.generation++
 	m.rebuildLocked()
 	m.mu.Unlock()
 	return err
@@ -330,13 +331,42 @@ func (m *Manager) relist(s *server) bool {
 }
 
 func (m *Manager) relistContext(ctx context.Context, s *server, notify bool) bool {
-	if !s.relisting.CompareAndSwap(false, true) {
+	if ctx.Err() != nil {
 		return false
 	}
-	defer s.relisting.Store(false)
+	s.relistMu.Lock()
+	if s.relisting {
+		s.relistPending = true
+		s.relistNotify = s.relistNotify || notify
+		s.relistMu.Unlock()
+		return false
+	}
+	s.relisting = true
+	s.relistMu.Unlock()
+	changed := false
+	for {
+		changed = m.relistOnce(ctx, s, notify) || changed
+		s.relistMu.Lock()
+		pending, pendingNotify := s.relistPending, s.relistNotify
+		s.relistPending, s.relistNotify = false, false
+		if !pending || ctx.Err() != nil {
+			s.relisting = false
+			s.relistMu.Unlock()
+			// A cancelled pre-turn poll must not discard a notification
+			// that arrived while its request was running.
+			if pending && pendingNotify {
+				go m.relist(s)
+			}
+			return changed
+		}
+		notify = notify || pendingNotify
+		s.relistMu.Unlock()
+	}
+}
+
+func (m *Manager) relistOnce(ctx context.Context, s *server, notify bool) bool {
 	m.mu.RLock()
-	generation := m.generation
-	current := m.servers[s.name] == s
+	current := m.servers[s.name] == s && s.err == nil
 	m.mu.RUnlock()
 	if !current || !s.offersTools || s.closing.Load() || s.client == nil || s.lost.Load() {
 		return false
@@ -344,11 +374,16 @@ func (m *Manager) relistContext(ctx context.Context, s *server, notify bool) boo
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.ConnectTimeout)*time.Second)
 	defer cancel()
 	definitions, err := listTools(ctx, s.client)
-	if err != nil || checkNames(s.name, definitions) != nil {
+	if err != nil {
+		return m.markSignInRequired(s, err, notify)
+	}
+	if checkNames(s.name, definitions) != nil {
 		return false
 	}
 	m.mu.Lock()
-	if m.generation != generation || m.servers[s.name] != s {
+	// Every reload and reconnect replaces the server pointer. Changes to
+	// other connections must not invalidate this server's discovery.
+	if m.servers[s.name] != s || s.closing.Load() || s.err != nil {
 		m.mu.Unlock()
 		return false
 	}
@@ -427,10 +462,11 @@ func (m *Manager) revive(ctx context.Context, s *server) (*server, error) {
 	}
 	m.mu.RLock()
 	current := m.servers[s.name]
+	unavailable := current == nil || current.err != nil || current.lost.Load()
 	m.mu.RUnlock()
 	if current != s {
 		// Another caller already replaced the connection.
-		if current == nil || current.err != nil || current.lost.Load() {
+		if unavailable {
 			return nil, fmt.Errorf("MCP server %q is disconnected, run /mcp reload to reconnect", s.name)
 		}
 		return current, nil
@@ -454,7 +490,6 @@ func (m *Manager) revive(ctx context.Context, s *server) (*server, error) {
 		return nil, fmt.Errorf("MCP server %q was reloaded, try again", s.name)
 	}
 	m.servers[s.name] = fresh
-	m.generation++
 	m.rebuildLocked()
 	callback := m.onChange
 	m.mu.Unlock()
@@ -475,7 +510,6 @@ func (s *server) shutdown() {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	terminateProcess(s.process)
 	if s.client != nil {
 		s.client.Close()
 	}
@@ -490,29 +524,7 @@ func (m *Manager) connect(ctx context.Context, s *server, useOAuth bool) (*clien
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	switch cfg.Transport {
 	case "stdio":
-		env := make([]string, 0, len(cfg.Env))
-		for k, v := range cfg.Env {
-			env = append(env, k+"="+v)
-		}
-		c, err = client.NewStdioMCPClientWithOptions(cfg.Command, env, cfg.Args, transport.WithCommandFunc(func(ctx context.Context, command string, env, args []string) (*exec.Cmd, error) {
-			cmd := exec.CommandContext(ctx, command, args...)
-			cmd.Env = append(os.Environ(), env...)
-			cmd.Dir = cfg.CWD
-			configureProcess(cmd)
-			s.process = cmd
-			return cmd, nil
-		}), transport.WithCommandLogger(logger))
-		if err == nil {
-			if stderr, ok := client.GetStderr(c); ok {
-				// stderr reaches EOF when the process exits.
-				go func() {
-					_, _ = io.Copy(io.Discard, stderr)
-					if !s.closing.Load() {
-						s.lost.Store(true)
-					}
-				}()
-			}
-		}
+		c, err = startStdio(s, logger)
 	case "streamable-http":
 		// The listening stream carries server notifications such as tool-list
 		// changes. Servers that do not offer it answer 405 and are skipped.
@@ -560,7 +572,6 @@ func (m *Manager) connect(ctx context.Context, s *server, useOAuth bool) (*clien
 		if s.cancel != nil {
 			s.cancel()
 		}
-		terminateProcess(s.process)
 		if c != nil {
 			c.Close()
 		}
@@ -579,7 +590,6 @@ func (m *Manager) connect(ctx context.Context, s *server, useOAuth bool) (*clien
 			if s.cancel != nil {
 				s.cancel()
 			}
-			terminateProcess(s.process)
 			c.Close()
 		}
 	}()
@@ -704,7 +714,6 @@ func (m *Manager) close() {
 	old := m.servers
 	m.servers = map[string]*server{}
 	m.tools = map[string]core.Tool{}
-	m.generation++
 	m.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, s := range old {
@@ -895,7 +904,8 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 		if ctx.Err() != nil {
 			return core.ToolResult{}, ctx.Err()
 		}
-		if client.IsOAuthAuthorizationRequiredError(err) || errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
+		if requiresSignIn(s.cfg, err) {
+			t.manager.markSignInRequired(s, err, true)
 			return core.ToolResult{}, fmt.Errorf("MCP server %q needs sign-in, open /mcp and press l", t.namespace)
 		}
 		// The client wraps transport failures in *transport.Error, while a

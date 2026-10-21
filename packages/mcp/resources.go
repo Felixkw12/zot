@@ -187,6 +187,10 @@ func (m *Manager) resourceRequest(ctx context.Context, s *server, method string,
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if requiresSignIn(s.cfg, err) {
+			m.markSignInRequired(s, err, true)
+			return nil, fmt.Errorf("MCP server %q needs sign-in, open /mcp and press l", s.name)
+		}
 		var transportErr *transport.Error
 		if (errors.As(err, &transportErr) && s.cfg.Transport != "streamable-http") || errors.Is(err, transport.ErrSessionTerminated) {
 			s.lost.Store(true)

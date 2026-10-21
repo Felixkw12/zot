@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -283,6 +284,19 @@ func (a *Agent) SetTools(reg Registry) {
 	a.mu.Lock()
 	a.Tools = reg
 	a.mu.Unlock()
+}
+
+// UpdateTools atomically transforms a snapshot of the current registry.
+// The callback must not call methods on this agent. Hosts use it when a
+// catalog refresh and runtime tool toggles can happen concurrently.
+func (a *Agent) UpdateTools(update func(Registry) Registry) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	current := maps.Clone(a.Tools)
+	if current == nil {
+		current = Registry{}
+	}
+	a.Tools = update(current)
 }
 
 // ToolRegistry returns a copy of the current registry. Hosts use it to

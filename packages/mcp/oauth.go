@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 )
 
@@ -152,6 +153,36 @@ func oauthEnabled(cfg ServerConfig) bool {
 	return cfg.Transport != "stdio" && !cfg.hasAuthorizationHeader()
 }
 
+func requiresSignIn(cfg ServerConfig, err error) bool {
+	return oauthEnabled(cfg) && (client.IsAuthorizationRequiredError(err) ||
+		client.IsOAuthAuthorizationRequiredError(err) || errors.Is(err, transport.ErrOAuthAuthorizationRequired))
+}
+
+// markSignInRequired withdraws capabilities after runtime authorization fails.
+// A late failure from a replaced connection must not affect its replacement.
+// notify is false for pre-turn polling, whose caller refreshes the registry.
+func (m *Manager) markSignInRequired(s *server, err error, notify bool) bool {
+	if !requiresSignIn(s.cfg, err) {
+		return false
+	}
+	m.mu.Lock()
+	if m.servers[s.name] != s || s.closing.Load() || errors.Is(s.err, ErrSignInRequired) {
+		m.mu.Unlock()
+		return false
+	}
+	s.err = ErrSignInRequired
+	if metadata := sameOriginMetadataURL(s.cfg.URL, authorizationMetadataURL(err)); metadata != "" {
+		s.authMetadataURL = metadata
+	}
+	m.rebuildLocked()
+	callback := m.onChange
+	m.mu.Unlock()
+	if notify && callback != nil {
+		callback()
+	}
+	return true
+}
+
 // redirectURI is fixed per configured port so a registered client keeps
 // working. Without a port the sign-in picks a free one and registers the
 // client for it.
@@ -241,6 +272,10 @@ type SignInStatus struct {
 func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInStatus)) error {
 	m.mu.RLock()
 	s := m.servers[name]
+	metadataURL := ""
+	if s != nil {
+		metadataURL = s.authMetadataURL
+	}
 	m.mu.RUnlock()
 	if s == nil {
 		return fmt.Errorf("server %q is not configured", name)
@@ -275,7 +310,7 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	if !configuredClient && stored.RedirectURI != redirect {
 		options.ClientID, options.ClientSecret = "", ""
 	}
-	if metadata := sameOriginMetadataURL(cfg.URL, s.authMetadataURL); metadata != "" {
+	if metadata := sameOriginMetadataURL(cfg.URL, metadataURL); metadata != "" {
 		options.ProtectedResourceMetadataURL = metadata
 	}
 	handler := transport.NewOAuthHandler(options)

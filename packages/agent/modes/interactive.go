@@ -7313,24 +7313,20 @@ func (i *Interactive) applyTelegramTools(active bool) {
 	if i.agent == nil {
 		return
 	}
-	current := i.agent.Tools
-	next := core.Registry{}
-	for name, t := range current {
-		if name == "telegram_send_image" || name == "telegram_send_file" {
-			continue
+	i.agent.UpdateTools(func(next core.Registry) core.Registry {
+		delete(next, "telegram_send_image")
+		delete(next, "telegram_send_file")
+		if active {
+			sender := telegramSenderAdapter{bridge: i.telegramBridge}
+			next["telegram_send_image"] = &tools.TelegramSendImageTool{
+				CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
+			}
+			next["telegram_send_file"] = &tools.TelegramSendFileTool{
+				CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
+			}
 		}
-		next[name] = t
-	}
-	if active {
-		sender := telegramSenderAdapter{bridge: i.telegramBridge}
-		next["telegram_send_image"] = &tools.TelegramSendImageTool{
-			CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
-		}
-		next["telegram_send_file"] = &tools.TelegramSendFileTool{
-			CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox, Sender: sender,
-		}
-	}
-	i.agent.SetTools(next)
+		return next
+	})
 }
 
 // telegramStatus writes a one-liner describing the bridge state.
