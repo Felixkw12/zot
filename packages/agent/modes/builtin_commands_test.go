@@ -144,6 +144,30 @@ func TestMCPManagerActionsEditConfigAndReload(t *testing.T) {
 	}
 }
 
+func TestMCPManagerEnableInvalidServerReportsFailure(t *testing.T) {
+	i, home := mcpManagerInteractive(t)
+	path := filepath.Join(home, "mcp.json")
+	if err := os.WriteFile(path, []byte(`{"mcpServers":{"s":{"enabled":false}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	i.runMCPAction(mcpAction{Kind: mcpActionReload})
+	i.runMCPAction(mcpAction{Kind: mcpActionSetEnabled, Name: "s", Path: path, Enabled: true})
+	if i.mcpDialog.notice != "" || !strings.Contains(i.mcpDialog.err, "command") {
+		t.Fatalf("enable result: notice=%q err=%q", i.mcpDialog.notice, i.mcpDialog.err)
+	}
+	if snap := i.mcpSource().Snapshot(); len(snap.Servers) != 1 || snap.Servers[0].State != mcp.StateInvalid {
+		t.Fatalf("enable snapshot: %+v", snap)
+	}
+}
+
+func TestMCPManagerReconnectMissingServerReportsFailure(t *testing.T) {
+	i, _ := mcpManagerInteractive(t)
+	i.runMCPAction(mcpAction{Kind: mcpActionReconnect, Name: "missing"})
+	if i.mcpDialog.notice != "" || !strings.Contains(i.mcpDialog.err, "not configured") {
+		t.Fatalf("reconnect result: notice=%q err=%q", i.mcpDialog.notice, i.mcpDialog.err)
+	}
+}
+
 func TestBuiltinCommandErrorsAreNotLabelledAsExtensions(t *testing.T) {
 	i := builtinCommandInteractive(t, &builtinCommandFixture{err: errors.New("failed")})
 	i.invokeExtensionCommand(context.Background(), "mcp", "")

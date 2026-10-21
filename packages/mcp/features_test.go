@@ -89,11 +89,12 @@ func TestProjectOverrideKeepsUserConnection(t *testing.T) {
 // listChangeServer is a stdio-free streamable HTTP fixture whose tool list
 // can change, and which announces changes on its event stream.
 type listChangeServer struct {
-	mu     sync.Mutex
-	tools  []string
-	events chan string
-	status atomic.Int32 // non-zero forces this status on POSTs
-	posts  atomic.Int32
+	mu            sync.Mutex
+	tools         []string
+	events        chan string
+	status        atomic.Int32 // non-zero forces this status on POSTs
+	posts         atomic.Int32
+	noListChanged bool
 }
 
 func (f *listChangeServer) handler(t *testing.T) http.Handler {
@@ -131,6 +132,9 @@ func (f *listChangeServer) handler(t *testing.T) http.Handler {
 			return
 		}
 		result := fixtureResult(req)
+		if req.Method == "initialize" && !f.noListChanged {
+			result.(map[string]any)["capabilities"].(map[string]any)["tools"] = map[string]any{"listChanged": true}
+		}
 		if req.Method == "tools/list" {
 			f.mu.Lock()
 			var tools []any

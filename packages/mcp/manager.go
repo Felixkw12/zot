@@ -68,8 +68,9 @@ type server struct {
 	count   int
 	tools   []ToolInfo
 	defs    []toolDefinition
-	// reconnecting serializes on-demand reconnects of this server.
-	reconnecting sync.Mutex
+	// reconnecting serializes on-demand reconnects with cancellable waits.
+	reconnectOnce sync.Once
+	reconnecting  chan struct{}
 	// http is the streamable HTTP transport, used to learn whether the
 	// server keeps an event stream open for change notifications.
 	http *retryTransport
@@ -81,6 +82,8 @@ type server struct {
 	resources bool
 	// offersTools gates discovery and polling on the negotiated capability.
 	offersTools bool
+	// listChanged is the negotiated tool-list notification capability.
+	listChanged bool
 	// authMetadataURL comes from the server's authorization challenge.
 	// It is validated by the OAuth handler before discovery uses it.
 	authMetadataURL string
@@ -93,9 +96,12 @@ var relistInterval atomic.Int64
 func init() { relistInterval.Store(int64(30 * time.Second)) }
 
 // pushesChanges reports whether the server can announce tool-list changes
-// itself: stdio and SSE always deliver notifications, streamable HTTP only
-// while it keeps an event stream open.
+// itself. Both the negotiated capability and a notification transport
+// are required. Streamable HTTP needs an open event stream.
 func (s *server) pushesChanges() bool {
+	if !s.listChanged {
+		return false
+	}
 	if s.cfg.Transport != "streamable-http" {
 		return true
 	}
@@ -275,24 +281,40 @@ func (m *Manager) Reconnect(ctx context.Context, name string) error {
 	defer m.lifecycle.Unlock()
 	m.mu.RLock()
 	old := m.servers[name]
+	_, wasInvalid := m.invalid[name]
 	cwd := m.cwd
 	m.mu.RUnlock()
 	loaded := loadConfigWithSources(m.home, cwd)
 	cfg, ok := loaded.configs[name]
-	if !ok || old == nil {
+	reason, invalid := loaded.invalid[name]
+	if (!ok && !invalid) || (old == nil && !wasInvalid) {
 		return fmt.Errorf("server %q is not configured, reload MCP after editing the file", name)
 	}
-	fresh := &server{name: name, cfg: cfg, raw: loaded.raw[name], source: loaded.sources[name], override: loaded.overrides[name]}
-	if old.client != nil {
+	if old != nil && old.client != nil {
 		old.closing.Store(true)
 		old.shutdown()
 	}
+	if invalid {
+		// An edit can invalidate a previously usable or disabled entry.
+		// Withdraw its old tools and retain the validation failure for the UI.
+		m.mu.Lock()
+		delete(m.servers, name)
+		m.invalid[name] = reason
+		m.invalidSources[name] = loaded.sources[name]
+		m.generation++
+		m.rebuildLocked()
+		m.mu.Unlock()
+		return fmt.Errorf("MCP server %q: %s", name, reason)
+	}
+	fresh := &server{name: name, cfg: cfg, raw: loaded.raw[name], source: loaded.sources[name], override: loaded.overrides[name]}
 	var err error
 	if !fresh.disabled() {
 		err = m.start(ctx, fresh)
 	}
 	m.mu.Lock()
 	m.servers[name] = fresh
+	delete(m.invalid, name)
+	delete(m.invalidSources, name)
 	m.generation++
 	m.rebuildLocked()
 	m.mu.Unlock()
@@ -393,8 +415,16 @@ func (m *Manager) RefreshStale(ctx context.Context) bool {
 // revive reconnects a dropped server before a call. Only one caller
 // reconnects at a time, others wait and reuse the result.
 func (m *Manager) revive(ctx context.Context, s *server) (*server, error) {
-	s.reconnecting.Lock()
-	defer s.reconnecting.Unlock()
+	s.reconnectOnce.Do(func() { s.reconnecting = make(chan struct{}, 1) })
+	select {
+	case s.reconnecting <- struct{}{}:
+		defer func() { <-s.reconnecting }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	m.mu.RLock()
 	current := m.servers[s.name]
 	m.mu.RUnlock()
@@ -561,6 +591,7 @@ func (m *Manager) connect(ctx context.Context, s *server, useOAuth bool) (*clien
 	s.offersTools = initialized.Capabilities.Tools != nil
 	var definitions []toolDefinition
 	if s.offersTools {
+		s.listChanged = initialized.Capabilities.Tools.ListChanged
 		definitions, err = listTools(ctx, c)
 		if err != nil {
 			return nil, nil, classify(err)

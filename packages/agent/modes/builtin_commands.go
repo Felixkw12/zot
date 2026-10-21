@@ -160,8 +160,20 @@ func (i *Interactive) runMCPServerAction(action mcpAction) {
 		})
 		cancel()
 		err = mcpOutcome(source, action)
-		if err == nil && reloadAborted(reloadErr) {
-			err = errors.New("saved, but the server did not reconnect: " + reloadErr.Error())
+		if err == nil && reloadErr != nil {
+			// Sign-in required is the expected reconnect result after logout.
+			// Other errors must not be hidden by an unchanged snapshot.
+			expectedSignIn := false
+			if action.Kind == mcpActionSignOut {
+				for _, s := range source.Snapshot().Servers {
+					if s.Name == action.Name && s.State == mcp.StateSignIn {
+						expectedSignIn = true
+					}
+				}
+			}
+			if !expectedSignIn || reloadAborted(reloadErr) {
+				err = fmt.Errorf("server did not reconnect: %w", reloadErr)
+			}
 		}
 	}
 	i.mcpDialog.Finish(notice, err)
