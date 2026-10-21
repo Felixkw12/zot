@@ -41,6 +41,9 @@ type storedCredentials struct {
 	// client can only be reused on the same callback port.
 	RedirectURI string           `json:"redirectUri,omitempty"`
 	Token       *transport.Token `json:"token,omitempty"`
+	// ResourceMetadataURL retains challenge discovery for token refresh.
+	// Its origin is checked again before it is passed to the transport.
+	ResourceMetadataURL string `json:"resourceMetadataUrl,omitempty"`
 }
 
 // tokenStore keeps OAuth credentials in one private file. Access is
@@ -170,14 +173,15 @@ func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect s
 		out.Scopes = cfg.OAuth.Scopes
 		out.AuthServerMetadataURL = cfg.OAuth.AuthServerMetadataURL
 	}
-	if out.ClientID == "" {
-		entry, ok, err := m.tokens.load(key)
-		if err != nil {
-			return out, err
-		}
-		if ok && entry.URL == cfg.URL {
+	entry, ok, err := m.tokens.load(key)
+	if err != nil {
+		return out, err
+	}
+	if ok && entry.URL == cfg.URL {
+		if out.ClientID == "" {
 			out.ClientID, out.ClientSecret = entry.ClientID, entry.ClientSecret
 		}
+		out.ProtectedResourceMetadataURL = sameOriginMetadataURL(cfg.URL, entry.ResourceMetadataURL)
 	}
 	if out.RedirectURI == "" {
 		out.RedirectURI = redirectURI(1)
@@ -186,6 +190,21 @@ func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect s
 		}
 	}
 	return out, nil
+}
+
+// sameOriginMetadataURL applies the SDK's challenge-origin restriction before
+// using a persisted URL as trusted OAuth configuration. Discovery still checks
+// that the returned metadata identifies the requested protected resource.
+func sameOriginMetadataURL(resource, metadata string) string {
+	base, err := neturl.Parse(resource)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return ""
+	}
+	candidate, err := neturl.Parse(metadata)
+	if err != nil || !strings.EqualFold(candidate.Scheme, base.Scheme) || !strings.EqualFold(candidate.Host, base.Host) {
+		return ""
+	}
+	return metadata
 }
 
 // authorizationMetadataURL retains challenge metadata across the connection
@@ -256,15 +275,11 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	if !configuredClient && stored.RedirectURI != redirect {
 		options.ClientID, options.ClientSecret = "", ""
 	}
+	if metadata := sameOriginMetadataURL(cfg.URL, s.authMetadataURL); metadata != "" {
+		options.ProtectedResourceMetadataURL = metadata
+	}
 	handler := transport.NewOAuthHandler(options)
 	handler.SetBaseURL(cfg.URL)
-	if s.authMetadataURL != "" {
-		// Use the SDK's challenge path rather than setting the URL directly,
-		// so an unrelated origin cannot redirect metadata discovery.
-		header := make(http.Header)
-		header.Set("WWW-Authenticate", fmt.Sprintf("Bearer resource_metadata=%q", s.authMetadataURL))
-		handler.HandleUnauthorizedResponse(&http.Response{Header: header})
-	}
 	if options.ClientID == "" {
 		if err := handler.RegisterClient(ctx, "zot"); err != nil {
 			listener.Close()
@@ -362,7 +377,9 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	if err := handler.ProcessAuthorizationResponse(ctx, result.code, state, verifier); err != nil {
 		return fmt.Errorf("token exchange failed: %w", err)
 	}
-	return nil
+	return m.tokens.update(key, func(entry *storedCredentials, _ bool) {
+		entry.ResourceMetadataURL = options.ProtectedResourceMetadataURL
+	})
 }
 
 // parsePastedRedirect reads what the user copied from the browser: the full

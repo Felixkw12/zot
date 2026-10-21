@@ -68,6 +68,10 @@ type Agent struct {
 	// limiting, business-hour gates, and deny-by-default setups.
 	BeforeTurn func(step int) (allowed bool, reason string)
 
+	// BeforeTurnContext is the context-aware variant. When set it takes
+	// precedence over BeforeTurn and receives the current run's context.
+	BeforeTurnContext func(context.Context, int) (allowed bool, reason string)
+
 	// BeforeNextTurn runs synchronously before a continuation model call,
 	// after the previous response and all tool results have been appended.
 	// It can compact the transcript safely before queued messages are drained.
@@ -505,8 +509,18 @@ func (a *Agent) runLoop(ctx context.Context, sink func(AgentEvent)) error {
 		}
 
 		sink(EvTurnStart{Step: step})
-		if a.BeforeTurn != nil {
-			if allowed, reason := a.BeforeTurn(step); !allowed {
+		beforeTurn := a.BeforeTurn
+		if a.BeforeTurnContext != nil {
+			beforeTurn = func(step int) (bool, string) { return a.BeforeTurnContext(ctx, step) }
+		}
+		if beforeTurn != nil {
+			allowed, reason := beforeTurn(step)
+			if err := ctx.Err(); err != nil {
+				sink(EvTurnEnd{Stop: provider.StopError, Err: err})
+				sink(EvDone{})
+				return err
+			}
+			if !allowed {
 				if reason == "" {
 					reason = "turn blocked by extension guard"
 				}

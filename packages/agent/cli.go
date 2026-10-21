@@ -433,12 +433,12 @@ func wireNonInteractiveAgentExtLifecycle(ctx context.Context, ag *core.Agent, ex
 		emitPermissionDecision(ctx, extMgr, call, core.ConfirmDecision{Allow: true, Source: "yolo"})
 		return true, "", res.ModifiedArgs
 	}
-	ag.BeforeTurn = func(step int) (bool, string) {
+	ag.BeforeTurnContext = func(turnCtx context.Context, step int) (bool, string) {
 		if step == 1 {
 			// Tools changed on servers that cannot announce it apply now.
-			extMgr.RefreshBuiltinTools(ctx)
+			extMgr.RefreshBuiltinTools(turnCtx)
 		}
-		res := extMgr.InterceptTurnStart(ctx, step)
+		res := extMgr.InterceptTurnStart(turnCtx, step)
 		return !res.Block, res.Reason
 	}
 	ag.BeforeAssistantMessage = func(text string) (bool, string, string) {
@@ -950,12 +950,12 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			return true, "", r.ModifiedArgs
 		}
-		a.BeforeTurn = func(step int) (bool, string) {
+		a.BeforeTurnContext = func(turnCtx context.Context, step int) (bool, string) {
 			if step == 1 {
 				// Tools changed on servers that cannot announce it apply now.
-				extMgr.RefreshBuiltinTools(ctx)
+				extMgr.RefreshBuiltinTools(turnCtx)
 			}
-			r := extMgr.InterceptTurnStart(ctx, step)
+			r := extMgr.InterceptTurnStart(turnCtx, step)
 			return !r.Block, r.Reason
 		}
 		a.BeforeAssistantMessage = func(text string) (bool, string, string) {

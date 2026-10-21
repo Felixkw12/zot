@@ -119,6 +119,24 @@ func parseResourceArgs(raw json.RawMessage) (resourceArgs, error) {
 // dropped connection. Hidden servers and servers without resources are
 // refused, so the tools cannot reach anything the catalog does not offer.
 func (m *Manager) resourceServer(ctx context.Context, name string) (*server, error) {
+	s, err := m.connectedResourceServer(name)
+	if err != nil {
+		return nil, err
+	}
+	if s.lost.Load() {
+		if _, err := m.revive(ctx, s); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+		// Reconnection can withdraw resources or change the active catalog.
+		return m.connectedResourceServer(name)
+	}
+	return s, nil
+}
+
+func (m *Manager) connectedResourceServer(name string) (*server, error) {
 	m.mu.RLock()
 	allowed, _ := m.resourceServersLocked()
 	s := m.servers[name]
@@ -133,9 +151,6 @@ func (m *Manager) resourceServer(ctx context.Context, name string) (*server, err
 		}
 		return nil, fmt.Errorf("MCP server %q does not offer resources, use one of: %s", name, strings.Join(allowed, ", "))
 	}
-	if s.lost.Load() {
-		return m.revive(ctx, s)
-	}
 	return s, nil
 }
 
@@ -146,18 +161,34 @@ var resourceRequestID atomic.Uint64
 // resourceRequest sends a resource request with the server's request
 // timeout. Results are decoded from the raw response, because the typed
 // client results drop fields such as annotations.
-func resourceRequest(ctx context.Context, s *server, method string, params any) (json.RawMessage, error) {
+func (m *Manager) resourceRequest(ctx context.Context, s *server, method string, params any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.RequestTimeout)*time.Second)
 	defer cancel()
-	response, err := s.client.GetTransport().SendRequest(ctx, transport.JSONRPCRequest{
+	// A paginated listing may hold a connection replaced by an earlier page.
+	// Always resolve the current, permitted server before sending a request.
+	s, err := m.resourceServer(ctx, s.name)
+	if err != nil {
+		return nil, err
+	}
+	request := transport.JSONRPCRequest{
 		JSONRPC: protocol.JSONRPC_VERSION, ID: protocol.NewRequestId(fmt.Sprintf("zot-resources-%d", resourceRequestID.Add(1))), Method: method, Params: params,
-	})
+	}
+	response, err := s.client.GetTransport().SendRequest(ctx, request)
+	if err != nil && ctx.Err() == nil && s.cfg.Transport == "streamable-http" && errors.Is(err, transport.ErrSessionTerminated) {
+		// A terminated session did not accept this request. Reinitialize and
+		// retry once, after checking that resources are still offered.
+		s.lost.Store(true)
+		if s, err = m.resourceServer(ctx, s.name); err != nil {
+			return nil, err
+		}
+		response, err = s.client.GetTransport().SendRequest(ctx, request)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		var transportErr *transport.Error
-		if errors.As(err, &transportErr) && s.cfg.Transport != "streamable-http" {
+		if (errors.As(err, &transportErr) && s.cfg.Transport != "streamable-http") || errors.Is(err, transport.ErrSessionTerminated) {
 			s.lost.Store(true)
 		}
 		return nil, fmt.Errorf("MCP server %q did not answer, check /mcp to see the server state", s.name)
@@ -177,12 +208,12 @@ type listing struct {
 	nextCursor string
 }
 
-func listPage(ctx context.Context, s *server, method, key, cursor string) (listing, error) {
+func (m *Manager) listPage(ctx context.Context, s *server, method, key, cursor string) (listing, error) {
 	var params any
 	if cursor != "" {
 		params = map[string]string{"cursor": cursor}
 	}
-	raw, err := resourceRequest(ctx, s, method, params)
+	raw, err := m.resourceRequest(ctx, s, method, params)
 	if err != nil {
 		return listing{}, err
 	}
@@ -245,7 +276,7 @@ func (m *Manager) list(ctx context.Context, raw json.RawMessage, method, key str
 		if err != nil {
 			return core.ToolResult{}, err
 		}
-		page, err := listPage(ctx, s, method, key, args.Cursor)
+		page, err := m.listPage(ctx, s, method, key, args.Cursor)
 		if err != nil {
 			return core.ToolResult{}, err
 		}
@@ -266,7 +297,7 @@ func (m *Manager) list(ctx context.Context, raw json.RawMessage, method, key str
 	for _, name := range names {
 		s, err := m.resourceServer(ctx, name)
 		if err == nil {
-			err = listAll(ctx, s, method, key, &all)
+			err = m.listAll(ctx, s, method, key, &all)
 		}
 		if err != nil {
 			if ctx.Err() != nil {
@@ -283,11 +314,11 @@ func (m *Manager) list(ctx context.Context, raw json.RawMessage, method, key str
 	return jsonResult(out)
 }
 
-func listAll(ctx context.Context, s *server, method, key string, all *[]map[string]any) error {
+func (m *Manager) listAll(ctx context.Context, s *server, method, key string, all *[]map[string]any) error {
 	cursor := ""
 	seen := map[string]bool{}
 	for page := 0; page < maxResourcePages; page++ {
-		result, err := listPage(ctx, s, method, key, cursor)
+		result, err := m.listPage(ctx, s, method, key, cursor)
 		if err != nil {
 			return err
 		}
@@ -331,7 +362,7 @@ func (m *Manager) readResource(ctx context.Context, raw json.RawMessage) (core.T
 	if err != nil {
 		return core.ToolResult{}, err
 	}
-	result, err := resourceRequest(ctx, s, string(protocol.MethodResourcesRead), map[string]string{"uri": args.URI})
+	result, err := m.resourceRequest(ctx, s, string(protocol.MethodResourcesRead), map[string]string{"uri": args.URI})
 	if err != nil {
 		return core.ToolResult{}, err
 	}
