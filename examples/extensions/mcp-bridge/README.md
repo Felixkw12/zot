@@ -1,5 +1,7 @@
 # mcp-bridge
 
+MCP tool support is now built into zot. This example remains available for its cache, idle reaper, and server management commands. An installed extension named `mcp` takes precedence over built-in support. See [the built-in MCP reference](../../../docs/mcp.md) for configuration and migration differences.
+
 Connect zot to [MCP (Model Context Protocol)](https://modelcontextprotocol.io) servers.
 
 This extension reads MCP server configurations from standard locations (same format as Claude Desktop, Cursor, Cline, etc.) and bridges their tools into zot so the LLM can call them directly.

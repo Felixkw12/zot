@@ -6,7 +6,7 @@
 <br>
 <p align="center">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue"></a>
-  <img alt="Go 1.25+" src="https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white">
+  <img alt="Go 1.25.5+" src="https://img.shields.io/badge/Go-1.25.5+-00ADD8?logo=go&logoColor=white">
   <img alt="30+ providers" src="https://img.shields.io/badge/providers-30+-34E2EA">
 </p>
 <p align="center">
@@ -295,7 +295,8 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--tools <csv>` | Only enable the listed tools. |
 | `--max-steps <n>` | Cap agent loop iterations (default 50). |
 | `-e`, `--ext <path>` | Load an extension from `<path>` for this run (repeatable; wins against installed extensions of the same name). |
-| `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. |
+| `--no-ext` | Skip extension discovery for this run. `--ext` still works on top, so `--no-ext --ext ./x` runs only `x`. Built-in MCP is unaffected. |
+| `--no-mcp` | Skip built-in MCP servers for this run. |
 | `--no-skill` | Disable all skills, including built-ins. No `skill` tool is registered and the system prompt has no skill manifest. |
 | `--no-context-files`, `-nc` | Disable discovery and loading of global and project `AGENTS.md` files. |
 | `--no-yolo` | Confirm every tool call before it runs (interactive TUI only). A dialog shows the tool name and a one-line preview of its args, while edit calls show the proposed diff in the tool panel, with four choices: yes, yes-always-this-tool-this-session, yes-always-this-session, no. Press `/` while the dialog is focused to run a slash command first; closing its input or child dialog returns to the pending confirmation. Ignored with a stderr warning in print / json / rpc modes, where tools still run freely so scripts and automation keep working. |
@@ -392,6 +393,7 @@ Slash command names are case-insensitive in the TUI and messaging backends; argu
 | `/study` | Run the canned prompt "Read and understand everything in the current directory." so the agent has full project context before you start asking targeted questions. Pass a path — typed, drag-dropped, or selected via `@` — to target a specific file or directory instead: `/study [dir:packages/]`, `/study cmd/zot/main.go`. |
 | `/jail` | Confine tools to the current directory. |
 | `/unjail` | Allow tools to touch paths outside again. |
+| `/mcp [add\|reload\|help]` | Open the MCP server manager (list, add, sign in, enable or disable, exposure, tools, reconnect, remove, each with a one-key shortcut). `add` opens the add wizard directly, `reload` reconnects all servers without restarting extensions, `help` prints text status. `reconnect`, `login`, and `logout` with a server name work in every mode. |
 | `/reload-ext` | Hot-reload all extensions (re-read manifests, respawn subprocesses, rebuild tool registry). |
 | `/telegram` | Connect, disconnect, or show status of the Telegram bridge (takes `connect` / `disconnect` / `status` as an optional argument; opens a picker without one). When connected, DMs from the paired user become prompts in the running session and the assistant's replies are mirrored back to Telegram. Alias: `/tg`. |
 | `/settings` | Change persistent settings, including inline images, auto-swarm, and the auto-compact threshold. Saved to `$ZOT_HOME/config.json`; takes effect immediately. |
@@ -1222,7 +1224,7 @@ You can keep typing while the agent is working. Pressing `enter` during a turn q
 
 To recover the most recently queued message back into the editor (to tweak it before it runs), press `Option+↑`. In VS Code's integrated terminal that chord doesn't survive xterm.js's macOS key handling — use `Option+Shift+↑` there. zot's hint line under the sliding-in queue adapts automatically based on `$TERM_PROGRAM`.
 
-Slash commands also work while the agent is busy. Non-destructive ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/new`, `/clear`, `/compact`, `/login`, `/logout`, `/model`, `/reload-ext`) cancel the active turn first and then run.
+Slash commands also work while the agent is busy. Non-destructive ones (`/help`, `/jump`, `/btw`, `/sessions`, `/skills`, `/reasoning`, `/settings`, `/jail`, `/unjail`, `/exit`) take effect immediately. Destructive ones (`/new`, `/clear`, `/compact`, `/login`, `/logout`, `/model`, `/mcp reload`, `/reload-ext`) cancel the active turn first and then run.
 
 
 ## Keys (interactive mode)
@@ -1281,6 +1283,14 @@ In the main chat, image prompts (clipboard or `!@` selections) can be queued dur
 |---|---|
 | `pgup`, `pgdn` | Scroll one page up or down. |
 | `up`, `down` (editor empty, not browsing prompt history) | Scroll three lines up or down. This is how the mouse wheel reaches the scroll logic on most terminals. |
+
+## MCP servers
+
+MCP tool support is built into zot. Add servers to `$ZOT_HOME/mcp.json` or the project's `.zot/mcp.json`, then start zot. Stdio, streamable HTTP, and legacy SSE are supported. Servers can provide tools and resources, such as files or documentation the model can read. Tools load through `mcp__search_tools` by default, avoiding large tool-schema payloads on every model request.
+
+Run `/mcp` to manage servers in the TUI: press `a` to add one through a guided wizard, `l` to sign in to an OAuth server, `e` to enable or disable, `x` to change exposure, `t` to browse tools, `d` to remove, and `r` to reload all servers. Dropped connections reconnect on the next call, and tool-list changes apply without a reload. Use `/mcp reload` after editing configuration files by hand. MCP reloads independently of extensions. `--no-mcp` disables MCP loading for one run. Only load trusted project configurations, since discovery can launch server processes before the first prompt and jail mode does not confine them. Existing installations of the `mcp` bridge extension take precedence over built-in support.
+
+See [docs/mcp.md](docs/mcp.md) for configuration, authentication headers, exposure settings, migration, and current limitations.
 
 ## Extensions
 

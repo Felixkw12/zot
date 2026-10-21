@@ -64,18 +64,23 @@ func runRPCMode(ctx context.Context, args Args, version string) error {
 		}
 	}
 	extMgr.WaitForReady(3 * time.Second)
+	for _, err := range loadBuiltinMCP(ctx, extMgr, args, r.CWD) {
+		fmt.Fprintln(os.Stderr, "MCP load:", err)
+	}
 	defer extMgr.Stop(2 * time.Second)
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 
 	ag := r.NewAgent()
 	wireNonInteractiveAgentExtHooks(ctx, ag, extMgr)
 
-	// /reload-ext hot-reload callback (also triggered via rpc
-	// `reload_ext` if/when added). Rebuilds the tool registry on the
-	// current agent so freshly-registered extension tools become
-	// callable without restarting the rpc process.
+	// Rebuild the live tool registry after extension or built-in reloads
+	// so updated tools become callable without restarting the RPC process.
 	adapter := &extToolAdapter{mgr: extMgr}
+	// Serialized: built-in MCP may refresh from a background goroutine.
+	var refreshMu sync.Mutex
 	extMgr.SetOnReload(func() {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
 		resolved, err := Resolve(args, true)
 		if err != nil {
 			return

@@ -46,6 +46,7 @@ Put behavior in the package that owns the concern:
 | `packages/agent/tools` | Built-in tools, permission checks, and jail behavior |
 | `packages/tui` | Terminal input, layout, rendering, markdown, themes, and images |
 | `packages/ignore` | Ignore-pattern matching |
+| `packages/mcp` | MCP server configuration, connections, OAuth, tool and resource catalog |
 
 Provider quirks must not leak into `packages/core`. Terminal escape handling and visual layout belong in `packages/tui`. Avoid making the interactive mode a catch-all when a focused package can own the behavior.
 

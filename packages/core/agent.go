@@ -281,6 +281,27 @@ func (a *Agent) SetTools(reg Registry) {
 	a.mu.Unlock()
 }
 
+// ToolRegistry returns a copy of the current registry. Hosts use it to
+// rebuild a registry without racing SetTools.
+func (a *Agent) ToolRegistry() Registry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(Registry, len(a.Tools))
+	for name, tool := range a.Tools {
+		out[name] = tool
+	}
+	return out
+}
+
+// hasTool reports whether name is registered. The registry can be
+// replaced by SetTools while a tool runs, so it is read under the lock.
+func (a *Agent) hasTool(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, err := a.Tools.Get(name)
+	return err == nil
+}
+
 // SetMessages replaces the transcript (used when resuming a session).
 func (a *Agent) SetMessages(msgs []provider.Message) {
 	a.mu.Lock()
@@ -404,7 +425,7 @@ func (a *Agent) promptWithPrelude(ctx context.Context, text string, images []pro
 		assistant := provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{*call}, Time: time.Now(), Meta: map[string]string{"origin_extension": origin, "synthetic_tool_call": "true"}}
 		tool := provider.Message{Role: provider.RoleTool, Content: []provider.Content{provider.ToolResultBlock{CallID: call.ID, Content: result.Content, IsError: result.IsError}}, Time: time.Now(), Meta: toolResultMetadata(result.State, map[string][]provider.NestedToolCall{call.ID: result.NestedCalls})}
 		for _, name := range result.ActivateTools {
-			if _, err := a.Tools.Get(name); err == nil && !containsString(tool.AddedToolNames, name) {
+			if a.hasTool(name) && !containsString(tool.AddedToolNames, name) {
 				tool.AddedToolNames = append(tool.AddedToolNames, name)
 			}
 		}
@@ -867,7 +888,7 @@ func (a *Agent) executeTools(ctx context.Context, msg provider.Message, sink fun
 			IsError: res.IsError,
 		})
 		for _, name := range res.ActivateTools {
-			if _, err := a.Tools.Get(name); err == nil && !containsString(addedTools, name) {
+			if a.hasTool(name) && !containsString(addedTools, name) {
 				addedTools = append(addedTools, name)
 			}
 		}

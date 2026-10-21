@@ -40,6 +40,9 @@ type extensionTool struct {
 // mgr to the extension that registered (name, schema). The default
 // per-call timeout is 60 seconds. Interactive tools have no reply deadline.
 func NewTool(mgr *Manager, info ToolInfo) core.Tool {
+	if tool := mgr.builtinTool(info.Name); tool != nil {
+		return tool
+	}
 	timeout := 60 * time.Second
 	if info.Interactive {
 		timeout = 0

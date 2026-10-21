@@ -18,6 +18,7 @@ type slashCommand struct {
 	Name           string // with leading "/"
 	Desc           string
 	Header         bool  // true = visual divider, not selectable
+	Builtin        bool  // dynamic host command, shown in the main group
 	matchedIndexes []int // byte offsets in Name for fuzzy skill matches
 }
 
@@ -81,9 +82,8 @@ type slashSuggester struct {
 	llamaConfigured bool
 	sessionsEnabled bool
 
-	// extra are commands contributed by extensions, refreshed each
-	// frame from the extension manager. Empty when no extensions
-	// have registered any. Sorted by name in SetExtra so map
+	// extra are dynamic built-in and extension commands, refreshed each
+	// frame from the host registry. Sorted by name in SetExtra so map
 	// iteration order doesn't reshuffle the popup between frames.
 	extra []slashCommand
 
@@ -100,7 +100,7 @@ type slashSuggester struct {
 	lastMatches []slashCommand
 }
 
-// SetExtra updates the extension-contributed command list. Called
+// SetExtra updates the dynamic host command list. Called
 // once per render with the live snapshot from the extension manager.
 // The list is sorted by name so the popup ordering stays stable
 // across redraws (Manager.Commands() iterates a map, which Go
@@ -200,15 +200,38 @@ func (s *slashSuggester) SetLlamaConfigured(configured bool) { s.llamaConfigured
 // SetSessionsEnabled controls commands that require persisted sessions.
 func (s *slashSuggester) SetSessionsEnabled(enabled bool) { s.sessionsEnabled = enabled }
 
-// allCatalog returns slashCatalog plus the current extra commands
-// (extension-registered) with a header divider between the two
-// groups. Extra entries are only kept if they don't collide with
-// a built-in name; the built-in always wins.
+// allCatalog groups static and dynamic built-ins before the extensions
+// divider. Dynamic built-ins follow /swarm. Dynamic entries cannot shadow
+// static built-in names.
 func (s *slashSuggester) allCatalog() []slashCommand {
 	base := s.baseCatalog()
 	if len(s.extra) == 0 {
 		return base
 	}
+	at := len(base)
+	for idx, c := range base {
+		if c.Name == "/swarm" {
+			at = idx + 1
+			break
+		}
+	}
+	var dynamic []slashCommand
+	for _, c := range s.extra {
+		if !c.Builtin {
+			continue
+		}
+		dup := false
+		for _, b := range base {
+			if strings.EqualFold(b.Name, c.Name) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			dynamic = append(dynamic, c)
+		}
+	}
+	base = append(base[:at:at], append(dynamic, base[at:]...)...)
 	out := make([]slashCommand, 0, len(base)+len(s.extra)+1)
 	out = append(out, base...)
 	var kept []slashCommand

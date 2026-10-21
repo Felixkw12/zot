@@ -88,6 +88,10 @@ type Args struct {
 	// can run "with only this one extension" via --no-ext --ext PATH.
 	NoExt bool
 
+	// NoMCP skips built-in MCP server loading. --no-ext does not imply it,
+	// because MCP is part of zot rather than an installed extension.
+	NoMCP bool
+
 	// NoSkill disables ALL skill discovery for this run, including
 	// the built-in skills compiled into the binary. The system
 	// prompt loses its "Available skills" manifest and the `skill`
@@ -276,6 +280,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.Exts = append(a.Exts, v)
 		case "--no-ext", "--no-extensions":
 			a.NoExt = true
+		case "--no-mcp":
+			a.NoMCP = true
 		case "--no-skill", "--no-skills":
 			a.NoSkill = true
 		case "--no-context-files", "-nc":
@@ -528,6 +534,7 @@ func printHelp(out *os.File, version string) {
 		row{"--no-yolo", "ask before running every tool call"},
 		row{"-y, --yes", "accept zot run consent without prompting"},
 		row{"--no-ext", "skip extension discovery for this run"},
+		row{"--no-mcp", "skip built-in MCP servers for this run"},
 		row{"--no-skill", "skip all skill discovery for this run"},
 		row{"--no-context-files, -nc", "skip AGENTS.md discovery for this run"},
 	)

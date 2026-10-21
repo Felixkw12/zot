@@ -162,9 +162,11 @@ type Manager struct {
 	model      string
 	hooks      HostHooks
 
-	mu       sync.RWMutex
-	ext      map[string]*Extension // keyed by manifest name
-	extOrder []*Extension          // successful load order
+	mu        sync.RWMutex
+	ext       map[string]*Extension // keyed by manifest name
+	extOrder  []*Extension          // successful load order
+	builtins  map[string]Builtin
+	builtinMu sync.Mutex // serializes built-in reload and shutdown
 
 	// commandIndex maps a lower-cased slash-command name (without the
 	// leading /) to its canonical registration. First-come-first-served:
@@ -559,9 +561,8 @@ func (m *Manager) LoadExplicit(ctx context.Context, paths []string) []error {
 	return errs
 }
 
-// SetOnReload registers a callback fired after a successful Reload.
-// Hosts use it to rebuild the agent's tool registry with freshly-
-// registered extension tools.
+// SetOnReload registers a callback fired after extension or built-in reloads.
+// Hosts use it to rebuild the agent's live tool registry.
 func (m *Manager) SetOnReload(fn func()) {
 	m.mu.Lock()
 	m.onReload = fn
@@ -642,6 +643,7 @@ func (m *Manager) Reload(ctx context.Context, grace time.Duration) ReloadStats {
 	}
 	m.mu.RUnlock()
 
+	m.closeShadowedBuiltins()
 	if callback != nil {
 		callback()
 	}
@@ -1245,6 +1247,11 @@ func (m *Manager) Commands() []CommandInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []CommandInfo
+	for _, name := range builtinNames(m.builtins) {
+		if _, exists := m.ext[name]; !exists {
+			out = append(out, CommandInfo{Extension: name, Name: name, Description: builtinDescription(name), Builtin: true})
+		}
+	}
 	for _, ext := range m.ext {
 		for _, c := range ext.commands {
 			registration, ok := m.commandIndex[strings.ToLower(c.Name)]
@@ -1261,12 +1268,13 @@ func (m *Manager) Commands() []CommandInfo {
 	return out
 }
 
-// CommandInfo is one extension-registered slash command, surfaced to
+// CommandInfo is one host-registered slash command, surfaced to
 // the rest of zot for display purposes.
 type CommandInfo struct {
 	Extension   string
 	Name        string
 	Description string
+	Builtin     bool // in-process commands belong with the main commands
 }
 
 // ToolInfo is one extension-registered tool. Used by the agent's
@@ -1293,6 +1301,21 @@ func (m *Manager) Tools() []ToolInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var out []ToolInfo
+	for _, owner := range builtinNames(m.builtins) {
+		if _, exists := m.ext[owner]; exists {
+			continue
+		}
+		for _, tool := range m.builtins[owner].Tools() {
+			if _, exists := m.toolIndex[tool.Name()]; exists {
+				continue
+			}
+			info := ToolInfo{Extension: owner, Name: tool.Name(), Description: tool.Description(), Schema: tool.Schema()}
+			if deferred, ok := tool.(interface{ Deferred() bool }); ok {
+				info.Deferred = deferred.Deferred()
+			}
+			out = append(out, info)
+		}
+	}
 	for _, ext := range m.ext {
 		for _, t := range ext.tools {
 			out = append(out, ToolInfo{
@@ -1316,6 +1339,9 @@ func (m *Manager) Tools() []ToolInfo {
 
 // HasTool reports whether name is registered by any extension.
 func (m *Manager) HasTool(name string) bool {
+	if m.builtinTool(name) != nil {
+		return true
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.toolIndex[name]
@@ -1326,6 +1352,9 @@ func (m *Manager) HasTool(name string) bool {
 // the matching tool_result. Used by the core.Tool wrapper that the
 // agent registers per extension-defined tool.
 func (m *Manager) InvokeTool(ctx context.Context, name string, args json.RawMessage, timeout time.Duration) (extproto.ToolResultFromExt, error) {
+	if tool := m.builtinTool(name); tool != nil {
+		return invokeBuiltinTool(ctx, tool, args, timeout)
+	}
 	return m.invokeTool(ctx, name, args, timeout, false)
 }
 
@@ -1416,6 +1445,9 @@ func (m *Manager) invokeTool(ctx context.Context, name string, args json.RawMess
 
 // HasCommand reports whether name is registered by any extension.
 func (m *Manager) HasCommand(name string) bool {
+	if m.builtinCommand(strings.ToLower(name)) != nil {
+		return true
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, ok := m.commandIndex[strings.ToLower(name)]
@@ -1423,6 +1455,9 @@ func (m *Manager) HasCommand(name string) bool {
 }
 
 func (m *Manager) CommandOwner(name string) string {
+	if m.builtinCommand(strings.ToLower(name)) != nil {
+		return strings.ToLower(name)
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if registration, ok := m.commandIndex[strings.ToLower(name)]; ok && registration.ext != nil {
@@ -1436,6 +1471,9 @@ func (m *Manager) CommandOwner(name string) string {
 // extension's CommandResponse so the caller can act on the action
 // (prompt / insert / display).
 func (m *Manager) Invoke(ctx context.Context, name, args string, timeout time.Duration) (extproto.CommandResponseFromExt, error) {
+	if source := m.builtinCommand(strings.ToLower(name)); source != nil {
+		return m.invokeBuiltinCommand(ctx, strings.ToLower(name), args, source)
+	}
 	m.mu.RLock()
 	registration, ok := m.commandIndex[strings.ToLower(name)]
 	m.mu.RUnlock()
@@ -1515,6 +1553,7 @@ func (m *Manager) Stop(gracePeriod time.Duration) {
 		exts = append(exts, e)
 	}
 	m.mu.RUnlock()
+	m.stopBuiltins()
 	stopExtensions(exts, gracePeriod)
 }
 

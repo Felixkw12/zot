@@ -563,6 +563,7 @@ type Interactive struct {
 	dialog            *loginDialog
 	modelDialog       *modelDialog
 	llamaDialog       *llamaDialog
+	mcpDialog         *mcpManagerDialog
 	rescueDialog      *rescueDialog
 	sessionDialog     *sessionDialog
 	swarmDialog       *swarmDialog
@@ -751,6 +752,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		dialog:            newLoginDialog(),
 		modelDialog:       newModelDialog(),
 		llamaDialog:       newLlamaDialog(),
+		mcpDialog:         newMCPManagerDialog(),
 		rescueDialog:      newRescueDialog(),
 		sessionDialog:     newSessionDialog(),
 		swarmDialog:       newSwarmDialog(),
@@ -1429,6 +1431,8 @@ func (i *Interactive) redraw() {
 		dialog = i.modelDialog.Render(i.cfg.Theme, cols)
 	case i.llamaDialog.Active():
 		dialog = i.llamaDialog.Render(i.cfg.Theme, cols)
+	case i.mcpDialog.Active():
+		dialog = i.mcpDialog.Render(i.cfg.Theme, cols)
 	case i.rescueDialog.Active():
 		dialog = i.rescueDialog.Render(i.cfg.Theme, cols)
 	case i.sessionDialog.Active():
@@ -1503,17 +1507,17 @@ func (i *Interactive) redraw() {
 		catalog := i.cfg.Extensions.Commands()
 		extra := make([]slashCommand, 0, len(catalog))
 		for _, c := range catalog {
-			// The popup renders extension commands under a dedicated
-			// "── extensions ───" divider, so the description doesn't
-			// need to repeat the source. If the description is empty,
-			// fall back to the extension name so the row isn't blank.
+			// Source metadata keeps dynamic built-ins in the main group
+			// and subprocess commands under the extensions divider.
+			// Fall back to the source name if the description is empty.
 			desc := c.Description
 			if strings.TrimSpace(desc) == "" {
 				desc = "(" + c.Extension + ")"
 			}
 			extra = append(extra, slashCommand{
-				Name: "/" + c.Name,
-				Desc: desc,
+				Name:    "/" + c.Name,
+				Desc:    desc,
+				Builtin: c.Builtin,
 			})
 		}
 		i.suggest.SetExtra(extra)
@@ -1921,6 +1925,15 @@ func (i *Interactive) redraw() {
 			cursorCol = c
 		}
 	}
+	if i.mcpDialog.Active() {
+		if r, c := i.mcpDialog.CursorPos(); r >= 0 {
+			cursorRow = dialogLead + r
+			cursorCol = c
+		} else {
+			cursorRow = -1
+			cursorCol = 0
+		}
+	}
 	if i.llamaDialog.Active() {
 		if r, c := i.llamaDialog.CursorPos(); r >= 0 {
 			cursorRow = dialogLead + r
@@ -2232,6 +2245,7 @@ func (i *Interactive) confirmChildActive() bool {
 		i.dialog.Active() ||
 		i.modelDialog.Active() ||
 		i.llamaDialog.Active() ||
+		i.mcpDialog.Active() ||
 		i.rescueDialog.Active() ||
 		i.sessionDialog.Active() ||
 		i.swarmDialog.Active() ||
@@ -2255,6 +2269,7 @@ func (i *Interactive) dialogOwnsInput() bool {
 		i.dialog.Active() ||
 		i.modelDialog.Active() ||
 		i.llamaDialog.Active() ||
+		i.mcpDialog.Active() ||
 		i.rescueDialog.Active() ||
 		i.sessionDialog.Active() ||
 		i.swarmDialog.Active() ||
@@ -2442,6 +2457,13 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	}
 	if i.llamaDialog.Active() {
 		i.llamaDialog.HandleKey(k)
+		i.invalidate()
+		return false
+	}
+	if i.mcpDialog.Active() {
+		if action := i.mcpDialog.HandleKey(k); action.Kind != mcpActionNone {
+			go i.runMCPAction(action)
+		}
 		i.invalidate()
 		return false
 	}
@@ -3195,10 +3217,20 @@ func userMessageText(m provider.Message) string {
 // timeouts surface as a status_err line.
 
 func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args string) {
+	label := "extension /" + name
+	if i.isBuiltinCommand(name) {
+		label = "/" + name
+		if name == "mcp" && i.openMCPManager(args) {
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(args), "reload") {
+			i.cancelAndWaitForIdle()
+		}
+	}
 	resp, err := i.cfg.Extensions.Invoke(ctx, name, args, 30*time.Second)
 	if err != nil {
 		i.mu.Lock()
-		i.statusErr = "extension /" + name + ": " + err.Error()
+		i.statusErr = label + ": " + err.Error()
 		i.statusOK = ""
 		i.mu.Unlock()
 		i.invalidate()
@@ -3206,7 +3238,7 @@ func (i *Interactive) invokeExtensionCommand(ctx context.Context, name, args str
 	}
 	if resp.Error != "" {
 		i.mu.Lock()
-		i.statusErr = "extension /" + name + ": " + resp.Error
+		i.statusErr = label + ": " + resp.Error
 		i.statusOK = ""
 		i.mu.Unlock()
 		i.invalidate()
@@ -3254,8 +3286,12 @@ func (i *Interactive) applyExtensionCommandResponse(name string, resp extproto.C
 		i.ed.Insert(resp.Insert)
 		i.invalidate()
 	case "display":
-		i.appendExtensionNote(name, resp.Display, "info")
-		i.invalidate()
+		if i.isBuiltinCommand(name) {
+			i.showBuiltinCommand(name, resp.Display)
+		} else {
+			i.appendExtensionNote(name, resp.Display, "info")
+			i.invalidate()
+		}
 	case "noop", "":
 		// nothing
 	default:

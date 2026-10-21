@@ -347,6 +347,7 @@ func loadNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, v
 		errs = append(errs, extMgr.Discover(ctx)...)
 	}
 	extMgr.WaitForReady(3 * time.Second)
+	errs = append(errs, loadBuiltinMCP(ctx, extMgr, args, r.CWD)...)
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 	return extMgr, func() { extMgr.Stop(2 * time.Second) }, errs
 }
@@ -365,8 +366,40 @@ func wireNonInteractiveAgentExtHooks(ctx context.Context, ag *core.Agent, extMgr
 	if ag == nil || extMgr == nil {
 		return
 	}
+	wireExtensionToolRefresh(ag, extMgr)
 	extMgr.SetToolCaller(extensionToolCaller(extMgr, func() *core.Agent { return ag }))
 	wireNonInteractiveAgentExtLifecycle(ctx, ag, extMgr)
+}
+
+// wireExtensionToolRefresh keeps the agent's extension and MCP tools in step
+// with the manager after built-in tool changes, such as an MCP server
+// announcing a new tool list or reconnecting during a call. Built-in tools
+// keep their entries. Refreshes are serialized because MCP triggers them
+// from background goroutines.
+func wireExtensionToolRefresh(ag *core.Agent, extMgr *extensions.Manager) {
+	initial := ag.ToolRegistry()
+	builtins := core.Registry{}
+	for name, tool := range initial {
+		if !extMgr.HasTool(name) {
+			builtins[name] = tool
+		}
+	}
+	adapter := &extToolAdapter{mgr: extMgr}
+	var mu sync.Mutex
+	extMgr.SetOnReload(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		reg := core.Registry{}
+		for name, tool := range builtins {
+			reg[name] = tool
+		}
+		for _, info := range adapter.Tools() {
+			if _, exists := reg[info.Name]; !exists {
+				reg[info.Name] = adapter.NewExtensionTool(info)
+			}
+		}
+		ag.SetTools(reg)
+	})
 }
 
 // wireNonInteractiveAgentExtLifecycle wires agent hooks without rebinding the
@@ -386,6 +419,10 @@ func wireNonInteractiveAgentExtLifecycle(ctx context.Context, ag *core.Agent, ex
 		return true, "", res.ModifiedArgs
 	}
 	ag.BeforeTurn = func(step int) (bool, string) {
+		if step == 1 {
+			// Tools changed on servers that cannot announce it apply now.
+			extMgr.RefreshBuiltinTools(ctx)
+		}
 		res := extMgr.InterceptTurnStart(ctx, step)
 		return !res.Block, res.Reason
 	}
@@ -747,6 +784,9 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	// haven't sent ready by then; ones that signalled earlier release
 	// the wait immediately.
 	extMgr.WaitForReady(3 * time.Second)
+	for _, err := range loadBuiltinMCP(ctx, extMgr, args, r.CWD) {
+		startupExtensionErrors = append(startupExtensionErrors, err.Error())
+	}
 	defer extMgr.Stop(2 * time.Second)
 
 	extToolAdapter := &extToolAdapter{mgr: extMgr}
@@ -896,6 +936,10 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return true, "", r.ModifiedArgs
 		}
 		a.BeforeTurn = func(step int) (bool, string) {
+			if step == 1 {
+				// Tools changed on servers that cannot announce it apply now.
+				extMgr.RefreshBuiltinTools(ctx)
+			}
 			r := extMgr.InterceptTurnStart(ctx, step)
 			return !r.Block, r.Reason
 		}
@@ -976,13 +1020,19 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		ag = core.NewAgent(nil, r.Model, r.SystemPrompt, r.ToolRegistry)
 	}
 
-	// /reload-ext callback: after the manager has respawned every
-	// extension, re-resolve the tool registry (built-ins + freshly-
-	// registered extension tools) and swap it onto the current
+	// After an extension or built-in reload, re-resolve the tool
+	// registry and swap it onto the current
 	// agent in-place. The current agent may have been replaced by a
 	// /model swap since spawn, so re-read the live `ag` on each
 	// invocation.
+	// Built-in MCP can trigger this from a background goroutine, for a
+	// tool-list change or a reconnect during a call. refreshMu serializes
+	// refreshes so a stale one cannot overwrite a newer registry, and /cd
+	// holds it while changing args.
+	var refreshMu sync.Mutex
 	extMgr.SetOnReload(func() {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
 		current := liveInteractiveAgent(iv, ag)
 		if current == nil {
 			return
@@ -1252,12 +1302,14 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		// Mutate captured state so subsequent agent rebuilds and
 		// session opens see the new cwd.
 		wasJailed := sharedSandbox != nil && sharedSandbox.Locked()
+		refreshMu.Lock()
 		args.CWD = absPath
 		r.CWD = absPath
 		if args.PermissionSet != nil {
 			expanded := args.PermissionSet.Expand(absPath, args.AgentDataDir)
 			args.PermissionSet = &expanded
 		}
+		refreshMu.Unlock()
 		if sharedSandbox != nil {
 			sharedSandbox.Root = absPath
 			if wasJailed {
@@ -1266,6 +1318,11 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 				sharedSandbox.Unlock()
 			}
 		}
+
+		// Reconnect built-in MCP for the new project's .zot/mcp.json
+		// before the rebuild below collects its tools. Failures are
+		// per server and shown by /mcp, they do not block the move.
+		_ = moveBuiltinMCP(ctx, extMgr, absPath)
 
 		// Rebuild the agent so tools / AGENTS.md / system prompt
 		// re-bind to the new cwd. buildAgent() reads from args + r.

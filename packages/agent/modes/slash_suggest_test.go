@@ -109,6 +109,52 @@ func TestSlashSuggesterBuiltinsShadowExtensionsCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestSlashSuggesterGroupsDynamicBuiltinsWithMainCommands(t *testing.T) {
+	s := newSlashSuggester()
+	s.SetExtra([]slashCommand{
+		{Name: "/answer", Desc: "extension command"},
+		{Name: "/mcp", Desc: "built-in MCP status", Builtin: true},
+		{Name: "/notifier", Desc: "extension command"},
+	})
+	inExtensions := false
+	foundBuiltin := false
+	for _, command := range s.matches("/") {
+		if command.Header {
+			inExtensions = true
+			continue
+		}
+		switch command.Name {
+		case "/mcp":
+			foundBuiltin = true
+			if inExtensions {
+				t.Fatal("built-in /mcp appears in the extensions group")
+			}
+		case "/answer", "/notifier":
+			if !inExtensions {
+				t.Fatalf("extension %s appears in the main group", command.Name)
+			}
+		}
+	}
+	if !foundBuiltin {
+		t.Fatal("built-in /mcp missing from the main group")
+	}
+	names := commandNames(s.allCatalog())
+	for idx, name := range names {
+		if name == "/swarm" && (idx+1 >= len(names) || names[idx+1] != "/mcp") {
+			t.Fatalf("/mcp does not follow /swarm: %v", names)
+		}
+	}
+	for _, command := range s.matches("/mc") {
+		if command.Header {
+			t.Fatal("built-in-only matches have an extensions divider")
+		}
+	}
+	s.SetExtra(nil)
+	if contains(commandNames(s.matches("/mcp")), "/mcp") {
+		t.Fatal("removed built-in command is still visible")
+	}
+}
+
 func TestSlashSuggesterCompletesVisibleSkills(t *testing.T) {
 	s := newSlashSuggester()
 	s.SetSkills([]*skills.Skill{
