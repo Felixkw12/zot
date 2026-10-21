@@ -129,6 +129,72 @@ func TestReadInvalidImageFailsBeforeSendingToProvider(t *testing.T) {
 	}
 }
 
+// Issue #227: unsupported image formats reported a misleading text-file error.
+func TestReadUnsupportedImageFormatsNameTheFormat(t *testing.T) {
+	ftyp := func(major string, compatible ...string) []byte {
+		box := []byte{0, 0, 0, 0}
+		box = append(box, "ftyp"+major+"\x00\x00\x00\x00"...)
+		for _, brand := range compatible {
+			box = append(box, brand...)
+		}
+		box[3] = byte(len(box))
+		return append(box, 0, 0, 0, 8, 'm', 'e', 't', 'a')
+	}
+	for _, tc := range []struct {
+		name   string
+		file   string
+		data   []byte
+		format string
+	}{
+		{"heic", "photo.heic", ftyp("heic", "mif1", "heic"), "HEIC"},
+		{"heif", "photo.heif", ftyp("mif1", "mif1"), "HEIF"},
+		{"avif", "photo.avif", ftyp("avif", "mif1", "avif"), "AVIF"},
+		{"heic brand only in compatible list", "photo.bin", ftyp("mif1", "mif1", "heic"), "HEIC"},
+		{"jp2", "scan.jp2", []byte{0, 0, 0, 0x0C, 'j', 'P', ' ', ' ', 0x0D, 0x0A, 0x87, 0x0A, 0}, "JPEG 2000"},
+		{"j2k codestream", "scan.j2k", []byte{0xFF, 0x4F, 0xFF, 0x51, 0}, "JPEG 2000"},
+		{"jxl container", "image.jxl", []byte{0, 0, 0, 0x0C, 'J', 'X', 'L', ' ', 0x0D, 0x0A, 0x87, 0x0A, 0}, "JPEG XL"},
+		{"jxl codestream", "image.jxl", []byte{0xFF, 0x0A, 0}, "JPEG XL"},
+		{"content wins over misleading extension", "image.dat", ftyp("heic", "mif1"), "HEIC"},
+		{"binary with known extension", "broken.heic", []byte{0, 1, 2, 3}, "HEIC"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, tc.file), tc.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := (&ReadTool{CWD: dir}).Execute(context.Background(), mustJSON(t, map[string]any{"path": tc.file}), nil)
+			want := tc.file + " is a " + tc.format + " image, which is not supported; convert it to PNG or JPEG first"
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestReadUnsupportedImageDetectionKeepsOtherFilesUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	// A text file that only has an image extension must still be readable.
+	if err := os.WriteFile(filepath.Join(dir, "notes.heic"), []byte("plain text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := (&ReadTool{CWD: dir}).Execute(context.Background(), mustJSON(t, map[string]any{"path": "notes.heic"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Content[0].(provider.TextBlock).Text; got != "plain text\n" {
+		t.Fatalf("text = %q", got)
+	}
+	// Other ISO BMFF files such as MP4 video keep the generic binary error.
+	mp4 := []byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'm', 'p', '4', '2'}
+	if err := os.WriteFile(filepath.Join(dir, "clip.mp4"), mp4, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&ReadTool{CWD: dir}).Execute(context.Background(), mustJSON(t, map[string]any{"path": "clip.mp4"}), nil)
+	if err == nil || err.Error() != "clip.mp4 looks binary; refusing to read as text" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestReadOffsetLimit(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")

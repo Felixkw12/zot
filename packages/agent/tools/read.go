@@ -135,7 +135,13 @@ func (t *ReadTool) Execute(ctx context.Context, raw json.RawMessage, progress fu
 		data = data[:maxReadBytes]
 	}
 
-	if looksBinary(data) {
+	// Recognize image formats zot cannot decode before the binary guard so
+	// the error names the format instead of reporting a text-file problem.
+	binary := looksBinary(data)
+	if format := unsupportedImageFormat(path, data, binary); format != "" {
+		return core.ToolResult{}, fmt.Errorf("%s is a %s image, which is not supported; convert it to PNG or JPEG first", a.Path, format)
+	}
+	if binary {
 		return core.ToolResult{}, fmt.Errorf("%s looks binary; refusing to read as text", a.Path)
 	}
 
@@ -250,6 +256,68 @@ func sniffImageMIME(data []byte) string {
 		return "image/webp"
 	}
 	return ""
+}
+
+// unsupportedImageFormat names image formats the read tool cannot decode,
+// detected from content signatures first. The extension is only a fallback
+// for binary content, so a text file with an image extension still reads.
+// Returns "" for anything else so regular text and binary handling applies.
+func unsupportedImageFormat(path string, data []byte, binary bool) string {
+	if format := sniffUnsupportedImage(data); format != "" {
+		return format
+	}
+	if !binary {
+		return ""
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".heic", ".heics":
+		return "HEIC"
+	case ".heif", ".heifs", ".hif":
+		return "HEIF"
+	case ".avif", ".avifs":
+		return "AVIF"
+	case ".jp2", ".j2k", ".j2c", ".jpf", ".jpx", ".jpm":
+		return "JPEG 2000"
+	case ".jxl":
+		return "JPEG XL"
+	}
+	return ""
+}
+
+func sniffUnsupportedImage(data []byte) string {
+	switch {
+	case len(data) >= 12 && bytes.Equal(data[:12], []byte{0, 0, 0, 0x0C, 'j', 'P', ' ', ' ', 0x0D, 0x0A, 0x87, 0x0A}),
+		len(data) >= 4 && bytes.Equal(data[:4], []byte{0xFF, 0x4F, 0xFF, 0x51}):
+		return "JPEG 2000"
+	case len(data) >= 12 && bytes.Equal(data[:12], []byte{0, 0, 0, 0x0C, 'J', 'X', 'L', ' ', 0x0D, 0x0A, 0x87, 0x0A}),
+		len(data) >= 2 && data[0] == 0xFF && data[1] == 0x0A:
+		return "JPEG XL"
+	}
+	// HEIF family: an ISO BMFF ftyp box listing a HEIF or AVIF brand.
+	if len(data) < 16 || !bytes.Equal(data[4:8], []byte("ftyp")) {
+		return ""
+	}
+	size := int(data[0])<<24 | int(data[1])<<16 | int(data[2])<<8 | int(data[3])
+	if size < 16 || size > len(data) {
+		size = len(data)
+	}
+	format := ""
+	for i := 8; i+4 <= size; i += 4 {
+		if i == 12 {
+			continue // minor version, not a brand
+		}
+		switch string(data[i : i+4]) {
+		case "avif", "avis":
+			return "AVIF"
+		case "heic", "heix", "heim", "heis", "hevc", "hevx", "hevm", "hevs":
+			format = "HEIC"
+		case "mif1", "msf1":
+			if format == "" {
+				format = "HEIF"
+			}
+		}
+	}
+	return format
 }
 
 // looksBinary returns true if the buffer contains a NUL byte in its first 8 KiB.
