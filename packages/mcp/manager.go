@@ -76,7 +76,10 @@ type server struct {
 	// listed is when the tool list was last read, in UnixNano.
 	listed atomic.Int64
 	// relistMu coalesces notifications received during a list request.
-	relistMu      sync.Mutex
+	relistMu sync.Mutex
+	// relistReady becomes true only after the initialized server is
+	// published. Earlier notifications must wait for that publication.
+	relistReady   bool
 	relisting     bool
 	relistPending bool
 	relistNotify  bool
@@ -182,6 +185,9 @@ func (m *Manager) Reload(ctx context.Context) []error {
 	m.loadedCWD = cwd
 	errs = append(errs, m.rebuildLocked()...)
 	m.mu.Unlock()
+	for _, s := range servers {
+		m.activateRelisting(s)
+	}
 	return errs
 }
 
@@ -319,7 +325,21 @@ func (m *Manager) Reconnect(ctx context.Context, name string) error {
 	delete(m.invalidSources, name)
 	m.rebuildLocked()
 	m.mu.Unlock()
+	m.activateRelisting(fresh)
 	return err
+}
+
+// activateRelisting drains notifications held during initialization. It must
+// run after publication, outside m.mu, on every new connection.
+func (m *Manager) activateRelisting(s *server) {
+	s.relistMu.Lock()
+	s.relistReady = true
+	pending, notify := s.relistPending, s.relistNotify
+	s.relistPending, s.relistNotify = false, false
+	s.relistMu.Unlock()
+	if pending {
+		go m.relistContext(context.Background(), s, notify)
+	}
 }
 
 // relist reads a server's tools again after it announced a change, then
@@ -335,7 +355,7 @@ func (m *Manager) relistContext(ctx context.Context, s *server, notify bool) boo
 		return false
 	}
 	s.relistMu.Lock()
-	if s.relisting {
+	if !s.relistReady || s.relisting {
 		s.relistPending = true
 		s.relistNotify = s.relistNotify || notify
 		s.relistMu.Unlock()
@@ -496,6 +516,7 @@ func (m *Manager) revive(ctx context.Context, s *server) (*server, error) {
 	if callback != nil {
 		callback()
 	}
+	m.activateRelisting(fresh)
 	if err != nil {
 		if errors.Is(fresh.err, ErrSignInRequired) {
 			return nil, fmt.Errorf("MCP server %q needs sign-in, open /mcp and press l", s.name)

@@ -52,6 +52,9 @@ type storedCredentials struct {
 type tokenStore struct {
 	path string
 	mu   sync.Mutex
+	// refreshLocks serialize complete refreshes per credential, not just
+	// individual file reads and writes. They are shared across connections.
+	refreshLocks map[string]chan struct{}
 }
 
 func newTokenStore(home string) *tokenStore {
@@ -117,14 +120,36 @@ func credentialKey(name, url string) string {
 	return name + "@" + hex.EncodeToString(digest[:6])
 }
 
+func (s *tokenStore) refreshLock(key string) chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.refreshLocks == nil {
+		s.refreshLocks = map[string]chan struct{}{}
+	}
+	if s.refreshLocks[key] == nil {
+		s.refreshLocks[key] = make(chan struct{}, 1)
+	}
+	return s.refreshLocks[key]
+}
+
 // serverTokens adapts the store to the client library for one server.
+// Refresh here so the SDK never reads an expired token and independently
+// replays its refresh token on concurrent tool, resource, or listener calls.
 type serverTokens struct {
-	store *tokenStore
-	key   string
-	url   string
+	store   *tokenStore
+	key     string
+	url     string
+	refresh func(context.Context, string) (*transport.Token, error)
 }
 
 func (t *serverTokens) GetToken(ctx context.Context) (*transport.Token, error) {
+	gate := t.store.refreshLock(t.key)
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -135,7 +160,21 @@ func (t *serverTokens) GetToken(ctx context.Context) (*transport.Token, error) {
 	if !ok || entry.Token == nil || entry.URL != t.url {
 		return nil, transport.ErrNoToken
 	}
-	return entry.Token, nil
+	// Re-read after acquiring the gate so waiters use a token that an
+	// earlier caller has already refreshed and saved.
+	if !entry.Token.IsExpired() && entry.Token.AccessToken != "" {
+		return entry.Token, nil
+	}
+	if entry.Token.RefreshToken != "" && t.refresh != nil {
+		token, err := t.refresh(ctx, entry.Token.RefreshToken)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err == nil && token != nil && !token.IsExpired() && token.AccessToken != "" {
+			return token, nil
+		}
+	}
+	return nil, transport.ErrOAuthAuthorizationRequired
 }
 
 func (t *serverTokens) SaveToken(ctx context.Context, token *transport.Token) error {
@@ -194,9 +233,10 @@ func redirectURI(port int) string {
 // client ID comes from the configuration or from an earlier registration.
 func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect string) (transport.OAuthConfig, error) {
 	key := credentialKey(name, cfg.URL)
+	tokens := &serverTokens{store: m.tokens, key: key, url: cfg.URL}
 	out := transport.OAuthConfig{
 		RedirectURI: redirect,
-		TokenStore:  &serverTokens{store: m.tokens, key: key, url: cfg.URL},
+		TokenStore:  tokens,
 		PKCEEnabled: true,
 	}
 	if cfg.OAuth != nil {
@@ -220,6 +260,11 @@ func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect s
 			out.RedirectURI = redirectURI(cfg.OAuth.CallbackPort)
 		}
 	}
+	// RefreshToken saves through this adapter but does not call GetToken,
+	// so the gate remains held through the entire exchange and save.
+	handler := transport.NewOAuthHandler(out)
+	handler.SetBaseURL(cfg.URL)
+	tokens.refresh = handler.RefreshToken
 	return out, nil
 }
 
