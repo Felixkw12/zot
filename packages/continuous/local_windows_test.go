@@ -44,6 +44,61 @@ func localPipePair(t *testing.T) (net.Conn, net.Conn) {
 	return client, server
 }
 
+// A client that connects and disconnects before Accept runs, like the
+// readiness probe in zot continuous serve tests, must not end the listener.
+func TestLocalPipeAcceptSurvivesEarlyClientDisconnect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "host.sock")
+	ln, err := ListenLocal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	probe, err := DialLocal(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.Close()
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			defer conn.Close()
+			var buf [4]byte
+			conn.SetDeadline(time.Now().Add(5 * time.Second))
+			_, err = io.ReadFull(conn, buf[:])
+			if err == nil && string(buf[:]) != "ping" {
+				err = fmt.Errorf("read %q", buf[:])
+			}
+		}
+		accepted <- err
+	}()
+	var client net.Conn
+	for {
+		client, err = DialLocal(ctx, path)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("dial after early disconnect: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatalf("accept after early disconnect: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("accept did not serve the second client")
+	}
+}
+
 func TestLocalPipeBufferedRoundTrip(t *testing.T) {
 	client, server := localPipePair(t)
 	for i := 0; i < 64; i++ {

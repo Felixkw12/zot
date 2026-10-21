@@ -137,6 +137,20 @@ func (l *pipeListener) newInstance(first bool) (*pipeConn, error) {
 const unsafeSizeofSecurityAttributes = 24
 
 func (l *pipeListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.acceptOnce()
+		// A client that connected and closed before ConnectNamedPipe ran
+		// (for example a readiness probe) leaves the instance reporting
+		// ERROR_NO_DATA. That is the client's disconnect, not a listener
+		// failure, so wait for the next client instead of ending Serve.
+		if errors.Is(err, windows.ERROR_NO_DATA) {
+			continue
+		}
+		return c, err
+	}
+}
+
+func (l *pipeListener) acceptOnce() (net.Conn, error) {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
