@@ -199,6 +199,9 @@ func listPage(ctx context.Context, s *server, method, key, cursor string) (listi
 	}
 	kept := items[:0]
 	for _, item := range items {
+		if item == nil {
+			return listing{}, fmt.Errorf("MCP server %q returned an invalid %s item", s.name, method)
+		}
 		if isAppResource(item) {
 			continue
 		}

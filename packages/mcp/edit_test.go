@@ -137,13 +137,24 @@ func TestEditToleratesNullServersAndKeepsSymlinksAndModes(t *testing.T) {
 	}
 }
 
-func TestEnablingABareOverrideRemovesIt(t *testing.T) {
+func TestEnablingABareOverrideStoresExplicitTrue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mcp.json")
 	writeConfig(t, path, `{"mcpServers":{"shared":{"enabled":false}}}`)
 	if err := SetServerEnabled(path, "shared", true); err != nil {
 		t.Fatal(err)
 	}
-	if data, _ := os.ReadFile(path); strings.Contains(string(data), "shared") {
-		t.Fatalf("empty override kept: %s", data)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Servers map[string]ServerConfig `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	cfg := file.Servers["shared"]
+	if cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("override would inherit a disabled user entry: %s", data)
 	}
 }

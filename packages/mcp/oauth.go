@@ -188,6 +188,20 @@ func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect s
 	return out, nil
 }
 
+// authorizationMetadataURL retains challenge metadata across the connection
+// failure and the later interactive sign-in, including OAuth-wrapped errors.
+func authorizationMetadataURL(err error) string {
+	var oauth *transport.OAuthAuthorizationRequiredError
+	if errors.As(err, &oauth) {
+		return oauth.ResourceMetadataURL
+	}
+	var required *transport.AuthorizationRequiredError
+	if errors.As(err, &required) {
+		return required.ResourceMetadataURL
+	}
+	return ""
+}
+
 // SignInStatus reports progress of an interactive sign-in.
 type SignInStatus struct {
 	URL string // authorization URL, set once the browser is opened
@@ -244,6 +258,13 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	}
 	handler := transport.NewOAuthHandler(options)
 	handler.SetBaseURL(cfg.URL)
+	if s.authMetadataURL != "" {
+		// Use the SDK's challenge path rather than setting the URL directly,
+		// so an unrelated origin cannot redirect metadata discovery.
+		header := make(http.Header)
+		header.Set("WWW-Authenticate", fmt.Sprintf("Bearer resource_metadata=%q", s.authMetadataURL))
+		handler.HandleUnauthorizedResponse(&http.Response{Header: header})
+	}
 	if options.ClientID == "" {
 		if err := handler.RegisterClient(ctx, "zot"); err != nil {
 			listener.Close()

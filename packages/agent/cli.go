@@ -347,7 +347,16 @@ func loadNonInteractiveExtensions(ctx context.Context, args Args, r *Resolved, v
 		errs = append(errs, extMgr.Discover(ctx)...)
 	}
 	extMgr.WaitForReady(3 * time.Second)
-	errs = append(errs, loadBuiltinMCP(ctx, extMgr, args, r.CWD)...)
+	mcpErrs := loadBuiltinMCP(ctx, extMgr, args, r.CWD)
+	if version == "continuous" {
+		// MCP failures are per-server diagnostics, not a reason to reject
+		// an otherwise usable continuous engine generation.
+		for _, err := range mcpErrs {
+			fmt.Fprintln(os.Stderr, "MCP load:", err)
+		}
+	} else {
+		errs = append(errs, mcpErrs...)
+	}
 	r.MergeExtensionTools(&extToolAdapter{mgr: extMgr})
 	return extMgr, func() { extMgr.Stop(2 * time.Second) }, errs
 }
@@ -384,22 +393,28 @@ func wireExtensionToolRefresh(ag *core.Agent, extMgr *extensions.Manager) {
 			builtins[name] = tool
 		}
 	}
-	adapter := &extToolAdapter{mgr: extMgr}
 	var mu sync.Mutex
 	extMgr.SetOnReload(func() {
 		mu.Lock()
 		defer mu.Unlock()
-		reg := core.Registry{}
-		for name, tool := range builtins {
-			reg[name] = tool
-		}
-		for _, info := range adapter.Tools() {
-			if _, exists := reg[info.Name]; !exists {
-				reg[info.Name] = adapter.NewExtensionTool(info)
-			}
-		}
-		ag.SetTools(reg)
+		ag.SetTools(extensionToolRegistry(builtins, extMgr))
 	})
+}
+
+// extensionToolRegistry takes a fresh catalog snapshot while preserving the
+// caller's host tools, including conversation-specific continuous tools.
+func extensionToolRegistry(builtins core.Registry, extMgr *extensions.Manager) core.Registry {
+	reg := core.Registry{}
+	for name, tool := range builtins {
+		reg[name] = tool
+	}
+	adapter := &extToolAdapter{mgr: extMgr}
+	for _, info := range adapter.Tools() {
+		if _, exists := reg[info.Name]; !exists {
+			reg[info.Name] = adapter.NewExtensionTool(info)
+		}
+	}
+	return reg
 }
 
 // wireNonInteractiveAgentExtLifecycle wires agent hooks without rebinding the

@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"sync"
+	"weak"
 
 	"github.com/patriceckhart/zot/packages/agent/codemode"
 	"github.com/patriceckhart/zot/packages/agent/extensions"
@@ -42,8 +45,37 @@ func loadContinuousEngine(ctx context.Context, args Args, rt *continuous.Runtime
 // Inference settings are resolved per conversation, without changing host tools,
 // filesystem permissions, project instructions, or extension generations.
 func newContinuousEngine(resolved Resolved, mgr *extensions.Manager, rt *continuous.Runtime, service func() *continuous.Service) continuous.Engine {
+	// Keep only host tools in the generation snapshot. Extension and MCP
+	// tools are collected from the current catalog for each build/refresh.
+	hostTools := core.Registry{}
+	for name, tool := range resolved.ToolRegistry {
+		if mgr == nil || !mgr.HasTool(name) {
+			hostTools[name] = tool
+		}
+	}
+	resolved.ToolRegistry = hostTools
+	type liveAgent struct {
+		agent    weak.Pointer[core.Agent]
+		builtins core.Registry
+	}
+	var refreshMu sync.Mutex
+	var agents []liveAgent
 	if mgr != nil {
 		mgr.SetToolCaller(extensionToolCaller(mgr, nil))
+		mgr.SetOnReload(func() {
+			refreshMu.Lock()
+			defer refreshMu.Unlock()
+			live := agents[:0]
+			for _, entry := range agents {
+				if ag := entry.agent.Value(); ag != nil {
+					ag.SetTools(extensionToolRegistry(entry.builtins, mgr))
+					live = append(live, entry)
+				}
+			}
+			// Do not retain completed agents or their conversation tools.
+			clear(agents[len(live):])
+			agents = live
+		})
 	}
 	return continuous.EngineFunc(func(ctx context.Context, c continuous.Conversation) (*core.Agent, error) {
 		inference, err := continuousInference(ctx, resolved, c.Config)
@@ -81,6 +113,19 @@ func newContinuousEngine(resolved Resolved, mgr *extensions.Manager, rt *continu
 		wireNonInteractiveAgentExtLifecycle(ctx, ag, mgr)
 		ag.Tools["subagent"] = &continuous.SubagentTool{Runtime: rt, Service: service()}
 		ag.Tools["handoff"] = continuous.HandoffTool{}
+		if mgr != nil {
+			// Serialize registration with notifications so a build cannot
+			// miss a change between taking its snapshot and subscribing.
+			refreshMu.Lock()
+			// Also prune on builds when the server catalog never changes.
+			agents = slices.DeleteFunc(agents, func(entry liveAgent) bool {
+				return entry.agent.Value() == nil
+			})
+			builtins := ag.ToolRegistry()
+			ag.SetTools(extensionToolRegistry(builtins, mgr))
+			agents = append(agents, liveAgent{agent: weak.Make(ag), builtins: builtins})
+			refreshMu.Unlock()
+		}
 		return ag, nil
 	})
 }

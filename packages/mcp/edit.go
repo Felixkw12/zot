@@ -42,23 +42,32 @@ func AddServer(path, name string, cfg ServerConfig) error {
 // other fields, including ones zot does not know, untouched. A nil value
 // removes the field.
 func SetServerField(path, name, field string, value any) error {
+	return editServer(path, name, func(entry map[string]json.RawMessage) error {
+		if value == nil {
+			delete(entry, field)
+			return nil
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		entry[field] = encoded
+		return nil
+	})
+}
+
+func editServer(path, name string, change func(map[string]json.RawMessage) error) error {
 	return editServers(path, func(servers map[string]json.RawMessage) error {
 		raw, ok := servers[name]
 		if !ok {
 			return fmt.Errorf("server %q is not defined in %s", name, path)
 		}
 		entry := map[string]json.RawMessage{}
-		if err := json.Unmarshal(raw, &entry); err != nil {
+		if err := json.Unmarshal(raw, &entry); err != nil || entry == nil {
 			return fmt.Errorf("server %q in %s is not an object", name, path)
 		}
-		if value == nil {
-			delete(entry, field)
-		} else {
-			encoded, err := json.Marshal(value)
-			if err != nil {
-				return err
-			}
-			entry[field] = encoded
+		if err := change(entry); err != nil {
+			return err
 		}
 		encoded, err := json.Marshal(entry)
 		if err != nil {
@@ -69,33 +78,45 @@ func SetServerField(path, name, field string, value any) error {
 	})
 }
 
-// SetServerEnabled enables or disables an entry. Enabling removes the field,
-// since servers are enabled by default.
-//
-// A project entry that only disables a user server, {"enabled": false}, is
-// deleted when enabled, since an empty entry would be invalid and would
-// keep hiding the user server.
+// SetServerEnabled enables or disables an entry. Full definitions omit the
+// enabled default, but partial overrides store true explicitly so they do
+// not inherit a disabled user entry.
 func SetServerEnabled(path, name string, enabled bool) error {
 	if !enabled {
 		return SetServerField(path, name, "enabled", false)
 	}
-	if err := SetServerField(path, name, "enabled", nil); err != nil {
-		return err
-	}
-	return editServers(path, func(servers map[string]json.RawMessage) error {
-		var entry map[string]json.RawMessage
-		if json.Unmarshal(servers[name], &entry) == nil && len(entry) == 0 {
-			delete(servers, name)
+	return editServer(path, name, func(entry map[string]json.RawMessage) error {
+		delete(entry, "enabled")
+		if partialEntry(entry) {
+			entry["enabled"] = json.RawMessage(`true`)
 		}
 		return nil
 	})
 }
 
-// SetServerExposure stores the exposure, omitting the deferred default.
+// partialEntry matches the loader's distinction between an inheriting
+// project override and a complete server definition.
+func partialEntry(entry map[string]json.RawMessage) bool {
+	for _, field := range transportFields {
+		if _, ok := entry[field]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+// SetServerExposure stores the exposure. The deferred default is omitted
+// only from full definitions, since an override must mask the user value.
 func SetServerExposure(path, name, exposure string) error {
 	switch exposure {
 	case "deferred":
-		return SetServerField(path, name, "exposure", nil)
+		return editServer(path, name, func(entry map[string]json.RawMessage) error {
+			delete(entry, "exposure")
+			if partialEntry(entry) {
+				entry["exposure"] = json.RawMessage(`"deferred"`)
+			}
+			return nil
+		})
 	case "direct", "hidden":
 		return SetServerField(path, name, "exposure", exposure)
 	}
@@ -124,6 +145,9 @@ func editServers(path string, change func(map[string]json.RawMessage) error) err
 	if len(strings.TrimSpace(string(data))) > 0 {
 		if err := json.Unmarshal(data, &root); err != nil {
 			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		if root == nil {
+			return fmt.Errorf("parse %s: configuration must be an object", path)
 		}
 	}
 	servers := map[string]json.RawMessage{}

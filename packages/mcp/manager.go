@@ -79,6 +79,11 @@ type server struct {
 	relisting atomic.Bool
 	// resources reports that the server offers MCP resources.
 	resources bool
+	// offersTools gates discovery and polling on the negotiated capability.
+	offersTools bool
+	// authMetadataURL comes from the server's authorization challenge.
+	// It is validated by the OAuth handler before discovery uses it.
+	authMetadataURL string
 }
 
 // relistInterval is how old a tool list may be before a server without
@@ -176,10 +181,13 @@ func (s *server) disabled() bool { return s.cfg.Enabled != nil && !*s.cfg.Enable
 // start connects one server and records its tools or error. Errors never
 // contain transport details, which can include URLs, headers, or arguments.
 func (m *Manager) start(ctx context.Context, s *server) error {
-	// Open servers connect without OAuth. OAuth is used when a token or an
-	// explicit oauth block exists, or after the server answers 401.
-	useOAuth := oauthEnabled(s.cfg) && (s.cfg.OAuth != nil || m.signedIn(s.name, s.cfg))
+	// Without a stored token, first let the server answer with its OAuth
+	// challenge. Enabling the OAuth transport without a token would fail
+	// locally before receiving the advertised metadata URL, even when an
+	// explicit OAuth configuration exists.
+	useOAuth := oauthEnabled(s.cfg) && m.signedIn(s.name, s.cfg)
 	c, definitions, err := m.connect(ctx, s, useOAuth)
+	s.authMetadataURL = authorizationMetadataURL(err)
 	if err != nil && !useOAuth && oauthEnabled(s.cfg) && client.IsAuthorizationRequiredError(err) {
 		err = fmt.Errorf("%w: server requires authorization", ErrSignInRequired)
 	}
@@ -308,7 +316,7 @@ func (m *Manager) relistContext(ctx context.Context, s *server, notify bool) boo
 	generation := m.generation
 	current := m.servers[s.name] == s
 	m.mu.RUnlock()
-	if !current || s.closing.Load() || s.client == nil || s.lost.Load() {
+	if !current || !s.offersTools || s.closing.Load() || s.client == nil || s.lost.Load() {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(s.cfg.ConnectTimeout)*time.Second)
@@ -359,7 +367,7 @@ func (m *Manager) RefreshStale(ctx context.Context) bool {
 	m.mu.RLock()
 	var due []*server
 	for _, s := range m.servers {
-		if s.client == nil || s.err != nil || s.lost.Load() || s.pushesChanges() {
+		if s.client == nil || s.err != nil || !s.offersTools || s.lost.Load() || s.pushesChanges() {
 			continue
 		}
 		if time.Since(time.Unix(0, s.listed.Load())) >= time.Duration(relistInterval.Load()) {
@@ -550,9 +558,13 @@ func (m *Manager) connect(ctx context.Context, s *server, useOAuth bool) (*clien
 		return nil, nil, classify(err)
 	}
 	s.resources = initialized.Capabilities.Resources != nil
-	definitions, err := listTools(ctx, c)
-	if err != nil {
-		return nil, nil, classify(err)
+	s.offersTools = initialized.Capabilities.Tools != nil
+	var definitions []toolDefinition
+	if s.offersTools {
+		definitions, err = listTools(ctx, c)
+		if err != nil {
+			return nil, nil, classify(err)
+		}
 	}
 	success = true
 	return c, definitions, nil
@@ -562,7 +574,7 @@ func (m *Manager) connect(ctx context.Context, s *server, useOAuth bool) (*clien
 // offer one instead of a generic failure.
 func classify(err error) error {
 	if client.IsOAuthAuthorizationRequiredError(err) || errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
-		return fmt.Errorf("%w: %v", ErrSignInRequired, err)
+		return fmt.Errorf("%w: %w", ErrSignInRequired, err)
 	}
 	return err
 }
@@ -816,13 +828,10 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 	// change. Only a tool still in the current catalog may be called, on
 	// the server's current connection, so withdrawn or hidden tools stay
 	// unreachable.
-	t.manager.mu.RLock()
-	current, _ := t.manager.tools[t.name].(*remoteTool)
-	t.manager.mu.RUnlock()
-	if current == nil || current.remoteName != t.remoteName || current.server.closing.Load() {
-		return core.ToolResult{}, fmt.Errorf("MCP tool %q is no longer available, check /mcp", t.name)
+	s, err := t.currentServer(nil)
+	if err != nil {
+		return core.ToolResult{}, err
 	}
-	s := current.server
 	if s.lost.Load() {
 		// A dropped connection reconnects on the next call.
 		var err error
@@ -833,6 +842,9 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 			return core.ToolResult{}, err
 		}
 	}
+	if _, err := t.currentServer(s); err != nil {
+		return core.ToolResult{}, err
+	}
 	request := protocol.CallToolRequest{Params: protocol.CallToolParams{Name: t.remoteName, Arguments: input}}
 	result, err := s.client.CallTool(ctx, request)
 	if err != nil && ctx.Err() == nil && s.cfg.Transport == "streamable-http" && errors.Is(err, transport.ErrSessionTerminated) {
@@ -840,6 +852,9 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 		// call, so it did not run. Start a new session and send it once more.
 		s.lost.Store(true)
 		if s, err = t.manager.revive(ctx, s); err == nil {
+			if _, err := t.currentServer(s); err != nil {
+				return core.ToolResult{}, err
+			}
 			result, err = s.client.CallTool(ctx, request)
 		} else if ctx.Err() == nil {
 			return core.ToolResult{}, err
@@ -892,6 +907,19 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 		out.Content = []provider.Content{provider.TextBlock{Text: "(empty MCP result)"}}
 	}
 	return out, nil
+}
+
+// currentServer validates both the remote identity and, after reconnecting,
+// the connection that is about to receive the call. A replacement catalog
+// may no longer offer this tool, even when reconnection succeeded.
+func (t *remoteTool) currentServer(expected *server) (*server, error) {
+	t.manager.mu.RLock()
+	defer t.manager.mu.RUnlock()
+	current, _ := t.manager.tools[t.name].(*remoteTool)
+	if current == nil || current.remoteName != t.remoteName || current.server.closing.Load() || (expected != nil && current.server != expected) {
+		return nil, fmt.Errorf("MCP tool %q is no longer available, check /mcp", t.name)
+	}
+	return current.server, nil
 }
 
 // searchTool reads the manager's current catalog on each search, so a
