@@ -593,21 +593,32 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		if configErr != nil {
 			return Resolved{}, configErr
 		}
-		if root == "" {
-			return Resolved{}, fmt.Errorf("LM Studio requires a server URL registered through /login or an explicit --base-url")
+		if root != "" {
+			args.BaseURL = root + "/v1"
 		}
-		args.BaseURL = root + "/v1"
 	}
 	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
 		managementURL, _, configErr := resolveLlamaCPPConfig(ctx, apiKeyCommandExecute)
 		if configErr != nil {
 			return Resolved{}, configErr
 		}
-		var baseErr error
-		args.BaseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
-		if baseErr != nil {
-			return Resolved{}, baseErr
+		if managementURL != "" {
+			var baseErr error
+			args.BaseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
+			if baseErr != nil {
+				return Resolved{}, baseErr
+			}
 		}
+	}
+	if args.BaseURL == "" && (provName == provider.LlamaCPPProviderID || provName == provider.LMStudioProviderID) {
+		endpointErr := fmt.Errorf("%s requires a server URL registered through /login or an explicit --base-url", provName)
+		if requireCred || inferenceOnly {
+			return Resolved{}, endpointErr
+		}
+		// Keep interactive startup available after logout, but never build
+		// a local client without an endpoint, even with an explicit API key.
+		cred, method, accountID = "", "", ""
+		credErr = endpointErr
 	}
 
 	// Insecure TLS is intentionally scoped to explicit custom endpoints.

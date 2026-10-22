@@ -304,8 +304,10 @@ User entries take precedence over discovery.
 The discovered catalog stays in memory, separate from the six-hour cloud model
 cache and llama.cpp's entries. Failed refreshes retain the previous snapshot,
 and `/model` reports discovery errors while keeping other providers accessible.
-Use `/logout lmstudio` to remove the connection and stop discovery. Background
-refresh never executes API-key commands.
+Use `/logout lmstudio` to remove the connection and stop discovery. The selected
+provider and model remain saved, and zot can restart without the connection.
+Reconnect through `/login` or select another provider through `/model` before
+sending prompts. Background refresh never executes API-key commands.
 
 The existing coding loop, tools, permissions, and built-in provider pricing
 remain unchanged. For older builds without `LM Studio` in `/login`, the manual
@@ -357,6 +359,8 @@ export LLAMA_API_KEY=optional-secret
 ```
 
 If a key is configured, start the router with the same `--api-key` value. A server bound only to `127.0.0.1` normally does not need authentication.
+
+Use `/logout llama.cpp` to remove the saved connection. The selected provider and model remain saved, and zot can restart without the connection. Reconnect through `/login` or select another provider through `/model` before sending prompts. `LLAMA_BASE_URL` still overrides the saved connection. Non-interactive inference requires a configured server URL or an explicit `--base-url`.
 
 After login, `/llama` becomes visible. It shows model state, searches Hugging Face for GGUF repositories, offers available quantizations, reports download and load progress, and explicitly loads or unloads models. Press `d` on a router-downloaded cache model to ask the router to remove it after confirmation. Models discovered through `--models-dir` or a preset are not removable through the router API and must be deleted from their configured source. Some llama.cpp versions retain shared Hugging Face repository artifacts such as `mmproj` files after removing the selected GGUF; remove that repository's cache directory manually if those artifacts are no longer needed. `HF_TOKEN` raises Hugging Face API limits and may be required for repository metadata. For gated files, approve access first and provide the authorized token to the `llama-server` process because the router performs the download.
 
