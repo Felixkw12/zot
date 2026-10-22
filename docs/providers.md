@@ -25,7 +25,7 @@ Use `/login` in interactive mode. Type in either provider picker to filter the l
 - `api key`: stores an API key in `$ZOT_HOME/auth.json` when the provider uses a normal key.
 - `subscription`: stores OAuth credentials for subscription-backed providers.
 
-Use `/logout` to remove stored credentials.
+Use `/logout` to choose stored credentials to remove, or `/logout <provider>` to remove a specific provider's credentials. This also works for custom providers removed from `models.json`. Use `/logout all` to remove all stored provider credentials, including custom providers.
 
 Some providers need more than a single pasted key. For those providers,
 `/login` shows setup instructions instead of opening a localhost browser form.

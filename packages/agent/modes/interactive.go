@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -5228,7 +5229,7 @@ func (i *Interactive) openLogoutDialog() {
 // is torn down so the user is forced through /login before their next
 // prompt.
 //
-// target: "anthropic" | "openai" | "kimi" | "github-copilot" | "all"
+// target is a built-in or stored provider ID, or "all".
 func (i *Interactive) doLogout(target string) {
 	if i.cfg.AuthManager == nil {
 		i.mu.Lock()
@@ -5244,21 +5245,32 @@ func (i *Interactive) doLogout(target string) {
 		return
 	}
 
+	creds, err := store.Load()
+	if err != nil {
+		i.mu.Lock()
+		i.statusErr = "read auth store: " + err.Error()
+		i.mu.Unlock()
+		return
+	}
+
 	var providers []string
 	switch target {
 	case "", "all":
 		providers = append([]string{"anthropic", "openai", "openai-codex", "kimi", "google", "github-copilot"}, auth.APIKeyProviders()...)
+		// Stored custom providers remain logout targets even after their
+		// definitions have been removed from models.json.
+		var additional []string
+		for p := range creds.AdditionalAPIKeyCreds {
+			if !slices.Contains(providers, p) {
+				additional = append(additional, p)
+			}
+		}
+		slices.Sort(additional)
+		providers = append(providers, additional...)
 	case "anthropic", "openai", "openai-codex", "kimi", "google", "github-copilot":
 		providers = []string{target}
 	default:
-		known := false
-		for _, p := range auth.APIKeyProviders() {
-			if target == p {
-				known = true
-				break
-			}
-		}
-		if !known {
+		if !creds.Has(target) && !slices.Contains(auth.APIKeyProviders(), target) {
 			i.mu.Lock()
 			i.statusErr = "unknown provider: " + target
 			i.mu.Unlock()
