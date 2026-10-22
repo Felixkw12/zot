@@ -272,6 +272,12 @@ func runWithArgsRaw(rawArgs []string, version string) error {
 		fmt.Println("zot", version)
 		return nil
 	}
+	if args.ListModelsJSON && !args.ListModels {
+		// JSON export waits for bounded local discovery itself. Do not race
+		// the snapshot against startup's background catalog updates.
+		loadRuntimeCatalog()
+		return printModelCatalogJSON(os.Stdout)
+	}
 	// Model catalog: load any cached discovery data before we inspect
 	// the model list (list-models, print/json, interactive).
 	prepareRuntimeCatalog()

@@ -279,6 +279,12 @@ func applyZotfileModelRequirements(args *Args, m ZotfileManifest) error {
 }
 
 func prepareRuntimeCatalog() {
+	loadRuntimeCatalog()
+	RefreshModelsAsync()
+}
+
+// loadRuntimeCatalog loads persisted metadata without starting background work.
+func loadRuntimeCatalog() {
 	LoadCachedModels()
 	LoadUserModels()
 	if cps := provider.CustomProviders(); len(cps) > 0 {
@@ -291,7 +297,6 @@ func prepareRuntimeCatalog() {
 		auth.SetExtraAPIKeyProviders(names)
 	}
 	ValidateAndRepairConfig()
-	RefreshModelsAsync()
 }
 
 func zotPack(dir, out string) error {

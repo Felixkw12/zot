@@ -268,6 +268,7 @@ zot --json "refactor main.go"    # newline-delimited json events, exit
 zot --continue                   # resume the most recent session for this cwd
 zot --resume                     # pick a session to resume
 zot --list-models                # show supported models
+zot --list-models-json           # picker-visible catalog as JSON, for extensions
 zot --help
 ```
 

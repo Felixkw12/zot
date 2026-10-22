@@ -636,6 +636,20 @@ in `models.json`. The `/models` wire format is assumed to be OpenAI style
 `--list-models` prints the catalog before the background refresh completes,
 so discovered models may be missing there.
 
+`--list-models-json` exports the catalog filtered by the same provider availability
+check as `/model`. It prints a JSON array sorted by provider then model ID, with
+`provider`, `id`, `name`, `reasoning`, `context_window`, `max_output`, and `source`
+fields. An empty result is `[]`.
+
+Before exporting, it waits for discovery from registered LM Studio and llama.cpp
+servers and opted-in custom providers. Each of these three refresh stages has a
+three-second timeout, including one shared timeout for all custom providers.
+Failures are reported on stderr while stdout remains valid JSON with the
+available catalog entries. Cloud model metadata comes from the built-in catalog
+and disk cache, without waiting for cloud discovery. Credential commands are never
+executed for this export, so discovery requiring `api_key_command` is skipped.
+Models already in the catalog for those providers can still be listed.
+
 ## Credential resolution
 
 For each request, zot checks credentials in this order:
