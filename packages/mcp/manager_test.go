@@ -191,6 +191,16 @@ func TestMCPStdioHelper(t *testing.T) {
 		}
 		_ = writer.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
 	}
+	// Stdin closed: the host asked for shutdown. A marker proves the exit
+	// was graceful. A stubborn server ignores the request and SIGTERM, so
+	// only a kill ends it.
+	if marker := os.Getenv("ZOT_MCP_EXIT_MARKER"); marker != "" {
+		_ = os.WriteFile(marker, []byte("clean"), 0o600)
+	}
+	if os.Getenv("ZOT_MCP_STUBBORN") == "1" {
+		ignoreInterrupt()
+		select {}
+	}
 	os.Exit(0)
 }
 

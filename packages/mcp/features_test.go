@@ -177,6 +177,35 @@ func TestToolListChangesUpdateTheCatalog(t *testing.T) {
 	}
 }
 
+// A changed list whose names collide is reported like a colliding list at
+// connection time, instead of silently keeping the previous catalog.
+func TestCollidingToolListChangeWithdrawsTheServer(t *testing.T) {
+	fixture := &listChangeServer{tools: []string{"old"}, events: make(chan string, 1)}
+	srv := httptest.NewServer(fixture.handler(t))
+	t.Cleanup(srv.Close)
+	m, errs := loadOne(t, srv.URL)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	changed := make(chan struct{}, 4)
+	m.OnChange(func() { changed <- struct{}{} })
+	fixture.mu.Lock()
+	fixture.tools = []string{"a-b", "a_b"}
+	fixture.mu.Unlock()
+	fixture.events <- `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`
+	select {
+	case <-changed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("colliding list change was not reported")
+	}
+	if reg := registry(m); len(reg) != 0 {
+		t.Fatalf("ambiguous tools still callable: %v", reg)
+	}
+	if info := m.Snapshot().Servers[0]; info.State != StateFailed || !strings.Contains(info.Problem, "collide") {
+		t.Fatalf("state=%+v", info)
+	}
+}
+
 func TestHTTPRetriesTransientFailuresButNotToolCalls(t *testing.T) {
 	var lists, calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

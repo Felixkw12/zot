@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"mime"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -389,13 +388,13 @@ func (m *Manager) readResource(ctx context.Context, raw json.RawMessage) (core.T
 		}
 		switch {
 		case content.Text != nil:
-			out.Content = append(out.Content, provider.TextBlock{Text: *content.Text})
+			out.Content = append(out.Content, m.boundedText("resource "+uri, *content.Text))
 		case content.Blob != nil:
 			data, err := base64.StdEncoding.DecodeString(*content.Blob)
 			if err != nil {
 				return core.ToolResult{}, fmt.Errorf("MCP server %q returned invalid binary data for %s", s.name, uri)
 			}
-			block, err := binaryResource(s.name, uri, content.MIMEType, data)
+			block, err := m.binaryResource(s.name, uri, content.MIMEType, data)
 			if err != nil {
 				return core.ToolResult{}, err
 			}
@@ -413,8 +412,9 @@ var inlineImageTypes = map[string]bool{"image/png": true, "image/jpeg": true, "i
 
 // binaryResource returns an image inline when providers accept its format
 // and size, and saves other binary content to a private temporary file so
-// the model can process it with its other tools.
-func binaryResource(serverName, uri, mimeType string, data []byte) (provider.Content, error) {
+// the model can process it with its other tools. The file is removed when
+// the manager closes.
+func (m *Manager) binaryResource(serverName, uri, mimeType string, data []byte) (provider.Content, error) {
 	mimeType = strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
 	if inlineImageTypes[mimeType] && len(data) <= maxInlineResourceSize {
 		return provider.ImageBlock{MimeType: mimeType, Data: data}, nil
@@ -423,22 +423,13 @@ func binaryResource(serverName, uri, mimeType string, data []byte) (provider.Con
 	if extensions, _ := mime.ExtensionsByType(mimeType); len(extensions) > 0 {
 		extension = extensions[0]
 	}
-	file, err := os.CreateTemp("", "zot-mcp-resource-*"+extension)
+	path, err := m.tempFile("zot-mcp-resource-*"+extension, data)
 	if err != nil {
-		return nil, fmt.Errorf("cannot save MCP resource: %w", err)
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		os.Remove(file.Name())
-		return nil, fmt.Errorf("cannot save MCP resource: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(file.Name())
 		return nil, fmt.Errorf("cannot save MCP resource: %w", err)
 	}
 	label := mimeType
 	if label == "" {
 		label = "binary"
 	}
-	return provider.TextBlock{Text: fmt.Sprintf("Binary resource %s from %s (%s, %d bytes) saved to %s", uri, serverName, label, len(data), filepath.ToSlash(file.Name()))}, nil
+	return provider.TextBlock{Text: fmt.Sprintf("Binary resource %s from %s (%s, %d bytes) saved to %s", uri, serverName, label, len(data), filepath.ToSlash(path))}, nil
 }

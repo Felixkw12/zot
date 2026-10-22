@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/patriceckhart/zot/packages/core"
 	"github.com/patriceckhart/zot/packages/provider"
@@ -82,6 +83,8 @@ func resourceFixture(t *testing.T, withResources bool, failing *atomic.Bool) *ht
 				reply(map[string]any{"contents": []any{map[string]any{"uri": req.Params.URI, "mimeType": "image/png", "blob": base64.StdEncoding.EncodeToString(pngPixel)}}})
 			case "file:///data.pdf":
 				reply(map[string]any{"contents": []any{map[string]any{"uri": req.Params.URI, "mimeType": "application/pdf", "blob": base64.StdEncoding.EncodeToString([]byte("%PDF-1.4"))}}})
+			case "file:///large.txt":
+				reply(map[string]any{"contents": []any{map[string]any{"uri": req.Params.URI, "mimeType": "text/plain", "text": strings.Repeat("ä", maxInlineTextSize)}}})
 			default:
 				fail("resource not found: " + req.Params.URI)
 			}
@@ -198,6 +201,37 @@ func TestResourceToolsListAndRead(t *testing.T) {
 	}
 	if info := m.Snapshot().Servers[0]; !info.Resources {
 		t.Fatal("snapshot does not report resources")
+	}
+}
+
+// Large text is cut at the inline limit and saved whole, and files handed
+// to the model by path do not outlive the manager.
+func TestLargeResultsAreSpilledToFilesRemovedOnClose(t *testing.T) {
+	srv := resourceFixture(t, true, nil)
+	m := resourceManager(t, map[string]string{"docs": fmt.Sprintf(`{"url":%q}`, srv.URL)})
+	large, err := callTool(t, m, readResourceTool, `{"server":"docs","uri":"file:///large.txt"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := textOf(large)
+	if len(text) > maxInlineTextSize+256 || !utf8.ValidString(text) || !strings.Contains(text, "complete text saved to ") {
+		t.Fatalf("large text not bounded cleanly: len=%d valid=%v tail=%q", len(text), utf8.ValidString(text), text[len(text)-120:])
+	}
+	spilled := text[strings.LastIndex(text, "saved to ")+len("saved to "):]
+	spilled = strings.TrimSuffix(spilled, "]")
+	if data, err := os.ReadFile(filepath.FromSlash(spilled)); err != nil || len(data) != maxInlineTextSize*2 {
+		t.Fatalf("spilled file %q: %d bytes %v", spilled, len(data), err)
+	}
+	binary, err := callTool(t, m, readResourceTool, `{"server":"docs","uri":"file:///data.pdf"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.FromSlash(textOf(binary)[strings.LastIndex(textOf(binary), "saved to ")+len("saved to "):])
+	m.Close()
+	for _, path := range []string{spilled, saved} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s survived Close: %v", path, err)
+		}
 	}
 }
 

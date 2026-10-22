@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -28,7 +30,9 @@ func (r *stdioOutput) Read(p []byte) (int, error) {
 }
 
 // stdioTransport owns the process because NewIO only owns the protocol
-// streams. Close kills the process group and reaps the direct child once.
+// streams. Close follows the MCP shutdown order: close stdin so the server
+// can exit on its own, then interrupt it, and finally kill the process
+// group. The direct child is reaped once.
 type stdioTransport struct {
 	*transport.Stdio
 	cmd    *exec.Cmd
@@ -37,12 +41,36 @@ type stdioTransport struct {
 	err    error
 }
 
+// shutdownGrace is how long a server gets after stdin closes, and again
+// after an interrupt, before it is killed. Tests shorten it.
+var shutdownGrace atomic.Int64
+
+func init() { shutdownGrace.Store(int64(2 * time.Second)) }
+
 func (t *stdioTransport) Close() error {
 	t.once.Do(func() {
-		terminateProcess(t.cmd)
+		// Stdio.Close closes stdin, which is the first shutdown signal.
 		t.err = t.Stdio.Close()
+		waited := make(chan error, 1)
+		go func() { waited <- t.cmd.Wait() }()
+		grace := time.Duration(shutdownGrace.Load())
+		var err error
+		select {
+		case err = <-waited:
+		case <-time.After(grace):
+			interruptProcess(t.cmd)
+			select {
+			case err = <-waited:
+			case <-time.After(grace):
+				terminateProcess(t.cmd)
+				err = <-waited
+			}
+		}
+		// A wrapper such as npx may exit before its children. Sweep the
+		// process group so nothing outlives the connection.
+		terminateProcess(t.cmd)
 		t.stdout.Close()
-		if err := t.cmd.Wait(); t.err == nil {
+		if t.err == nil {
 			t.err = err
 		}
 	})

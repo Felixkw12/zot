@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -47,6 +48,9 @@ type Manager struct {
 	// onChange runs, without locks held, after the catalog changed outside
 	// a Reload, for example when a server announced new tools.
 	onChange func()
+	// tempFiles holds large results handed to the model by path. They are
+	// removed when the manager closes.
+	tempFiles []string
 }
 
 type server struct {
@@ -397,9 +401,7 @@ func (m *Manager) relistOnce(ctx context.Context, s *server, notify bool) bool {
 	if err != nil {
 		return m.markSignInRequired(s, err, notify)
 	}
-	if checkNames(s.name, definitions) != nil {
-		return false
-	}
+	collision := checkNames(s.name, definitions)
 	m.mu.Lock()
 	// Every reload and reconnect replaces the server pointer. Changes to
 	// other connections must not invalidate this server's discovery.
@@ -408,12 +410,27 @@ func (m *Manager) relistOnce(ctx context.Context, s *server, notify bool) bool {
 		return false
 	}
 	changed := !sameDefinitions(s.defs, definitions)
-	s.setTools(definitions)
+	if collision != nil {
+		// The new list is ambiguous, as it would be at connection time.
+		// Withdraw the server's tools and show the reason instead of
+		// keeping a stale catalog behind a connected state.
+		s.err = collision
+		s.setTools(nil)
+		changed = true
+	} else {
+		s.setTools(definitions)
+	}
 	if changed {
 		m.rebuildLocked()
 	}
 	callback := m.onChange
 	m.mu.Unlock()
+	if collision != nil {
+		// Nothing can use the connection until a reconnect, which starts
+		// a fresh one.
+		s.closing.Store(true)
+		s.shutdown()
+	}
 	if changed && notify && callback != nil {
 		callback()
 	}
@@ -695,11 +712,29 @@ func listTools(ctx context.Context, c *client.Client) ([]toolDefinition, error) 
 }
 
 // toolSchema returns the server's schema, or an empty object schema when the
-// server sent none or a value providers would reject.
+// server sent none or a value providers would reject. Providers require a
+// tool's input schema to describe an object, so a schema of another type
+// is replaced too, rather than failing every request that advertises it.
 func toolSchema(raw json.RawMessage) json.RawMessage {
 	var probe map[string]json.RawMessage
 	if len(raw) == 0 || json.Unmarshal(raw, &probe) != nil || probe == nil {
 		return json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	if kind, ok := probe["type"]; ok {
+		var single string
+		var several []string
+		switch {
+		case json.Unmarshal(kind, &single) == nil:
+			if single != "object" {
+				return json.RawMessage(`{"type":"object","properties":{}}`)
+			}
+		case json.Unmarshal(kind, &several) == nil:
+			if !slices.Contains(several, "object") {
+				return json.RawMessage(`{"type":"object","properties":{}}`)
+			}
+		default:
+			return json.RawMessage(`{"type":"object","properties":{}}`)
+		}
 	}
 	return raw
 }
@@ -728,6 +763,7 @@ func (m *Manager) Close() {
 	m.lifecycle.Lock()
 	defer m.lifecycle.Unlock()
 	m.close()
+	m.removeTempFiles()
 }
 
 func (m *Manager) close() {
@@ -950,7 +986,7 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 	for _, content := range result.Content {
 		switch c := content.(type) {
 		case protocol.TextContent:
-			out.Content = append(out.Content, provider.TextBlock{Text: c.Text})
+			out.Content = append(out.Content, t.manager.boundedText("tool "+t.name, c.Text))
 		case protocol.ImageContent:
 			data, err := base64.StdEncoding.DecodeString(c.Data)
 			if err != nil {
@@ -959,7 +995,7 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage, _ func(s
 			out.Content = append(out.Content, provider.ImageBlock{MimeType: c.MIMEType, Data: data})
 		default:
 			data, _ := json.Marshal(content)
-			out.Content = append(out.Content, provider.TextBlock{Text: string(data)})
+			out.Content = append(out.Content, t.manager.boundedText("tool "+t.name, string(data)))
 		}
 	}
 	if result.StructuredContent != nil {

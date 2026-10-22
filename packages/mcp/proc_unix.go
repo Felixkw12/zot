@@ -11,6 +11,14 @@ func configureProcess(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+// interruptProcess asks the whole process group to exit, so a server that
+// ignores a closed stdin can still clean up.
+func interruptProcess(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	}
+}
+
 // Terminate the whole process group, including command wrappers and children.
 func terminateProcess(cmd *exec.Cmd) {
 	if cmd != nil && cmd.Process != nil {

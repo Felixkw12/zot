@@ -63,6 +63,13 @@ type Snapshot struct {
 // Snapshot returns the current server list ordered by attention: failed
 // and invalid first, then connected, then disabled, each by name.
 func (m *Manager) Snapshot() Snapshot {
+	// The token file is read once, before the lock, so rendering never
+	// performs file I/O while holding the manager lock.
+	credentials := m.tokens.snapshot()
+	signedIn := func(name string, cfg ServerConfig) bool {
+		entry, ok := credentials.Servers[credentialKey(name, cfg.URL)]
+		return ok && entry.Token != nil && entry.URL == cfg.URL
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	cwd := m.loadedCWD
@@ -78,19 +85,17 @@ func (m *Manager) Snapshot() Snapshot {
 	project := ProjectConfigPath(cwd)
 	for name, s := range m.servers {
 		info := ServerInfo{
-			Name:      name,
-			State:     StateConnected,
-			Transport: s.cfg.Transport,
-			Target:    describeTarget(s.raw),
-			Exposure:  s.cfg.Exposure,
-			Source:    s.source,
-			Project:   s.source == project,
-			Override:  s.override,
-			ToolCount: s.count,
-			Tools:     append([]ToolInfo(nil), s.tools...),
-			// Only static fields are read here, the token store is read
-			// below without holding the manager lock for long.
-			OAuth:        oauthEnabled(s.cfg) && !s.disabled() && (s.cfg.OAuth != nil || errors.Is(s.err, ErrSignInRequired) || m.signedIn(name, s.cfg)),
+			Name:         name,
+			State:        StateConnected,
+			Transport:    s.cfg.Transport,
+			Target:       describeTarget(s.raw),
+			Exposure:     s.cfg.Exposure,
+			Source:       s.source,
+			Project:      s.source == project,
+			Override:     s.override,
+			ToolCount:    s.count,
+			Tools:        append([]ToolInfo(nil), s.tools...),
+			OAuth:        oauthEnabled(s.cfg) && !s.disabled() && (s.cfg.OAuth != nil || errors.Is(s.err, ErrSignInRequired) || signedIn(name, s.cfg)),
 			ToolExposure: len(s.cfg.ToolExposure) > 0,
 			Resources:    s.resources && s.client != nil && s.err == nil && s.cfg.Exposure != "hidden",
 		}
@@ -124,7 +129,7 @@ func (m *Manager) Snapshot() Snapshot {
 		info := &snap.Servers[idx]
 		if info.OAuth {
 			if s := m.servers[info.Name]; s != nil {
-				info.SignedIn = m.signedIn(info.Name, s.cfg)
+				info.SignedIn = signedIn(info.Name, s.cfg)
 			}
 		}
 	}

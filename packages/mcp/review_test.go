@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/patriceckhart/zot/packages/core"
+	"github.com/patriceckhart/zot/packages/provider"
 )
 
 // schemaServer advertises one tool with the given input schema.
@@ -85,6 +86,62 @@ func TestMissingSchemaBecomesEmptyObject(t *testing.T) {
 	}
 	if got := string(core.NewRegistry(m.Tools()...)["mcp__s__t"].Schema()); got != `{"type":"object","properties":{}}` {
 		t.Fatalf("schema=%s", got)
+	}
+}
+
+// Providers reject tools whose input schema is not an object, which would
+// fail every request while such a tool is advertised.
+func TestNonObjectSchemaBecomesEmptyObject(t *testing.T) {
+	for _, schema := range []any{map[string]any{"type": "array"}, map[string]any{"type": "string"}, map[string]any{"type": 7}} {
+		m, errs := loadOne(t, schemaServer(t, schema, nil).URL)
+		if len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		if got := string(core.NewRegistry(m.Tools()...)["mcp__s__t"].Schema()); got != `{"type":"object","properties":{}}` {
+			t.Fatalf("schema %v forwarded as %s", schema, got)
+		}
+	}
+	if got := string(toolSchema(json.RawMessage(`{"type":["object","null"],"properties":{}}`))); !strings.Contains(got, `"null"`) {
+		t.Fatalf("object union replaced: %s", got)
+	}
+}
+
+// A tool result larger than the inline limit is cut and saved whole, so
+// one call cannot fill the context window.
+func TestLargeToolResultIsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.ID) == 0 {
+			w.WriteHeader(202)
+			return
+		}
+		result := fixtureResult(req)
+		if req.Method == "tools/call" {
+			result = map[string]any{"content": []any{map[string]string{"type": "text", "text": strings.Repeat("x", maxInlineTextSize+1)}}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	t.Cleanup(srv.Close)
+	m, errs := loadOne(t, srv.URL)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	result, err := core.NewRegistry(m.Tools()...)["mcp__s__issues"].Execute(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := result.Content[0].(provider.TextBlock).Text
+	if len(text) > maxInlineTextSize+256 || !strings.Contains(text, "from tool mcp__s__issues, complete text saved to ") {
+		t.Fatalf("len=%d tail=%q", len(text), text[len(text)-120:])
+	}
+	path := strings.TrimSuffix(text[strings.LastIndex(text, "saved to ")+len("saved to "):], "]")
+	if data, err := os.ReadFile(filepath.FromSlash(path)); err != nil || len(data) != maxInlineTextSize+1 {
+		t.Fatalf("saved file: %d bytes %v", len(data), err)
+	}
+	m.Close()
+	if _, err := os.Stat(filepath.FromSlash(path)); !os.IsNotExist(err) {
+		t.Fatalf("file survived Close: %v", err)
 	}
 }
 

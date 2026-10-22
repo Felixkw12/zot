@@ -79,6 +79,15 @@ func (s *tokenStore) read() (tokenFile, error) {
 	return file, nil
 }
 
+// snapshot reads the whole file once, for callers that check several
+// servers without repeating the file read for each.
+func (s *tokenStore) snapshot() tokenFile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	file, _ := s.read()
+	return file
+}
+
 func (s *tokenStore) load(key string) (storedCredentials, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,9 +264,16 @@ func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect s
 		out.ProtectedResourceMetadataURL = sameOriginMetadataURL(cfg.URL, entry.ResourceMetadataURL)
 	}
 	if out.RedirectURI == "" {
-		out.RedirectURI = redirectURI(1)
-		if cfg.OAuth != nil && cfg.OAuth.CallbackPort > 0 {
+		// Refreshes do not redirect, but the library requires a value. Use
+		// the URI the stored client was registered with, so a strict
+		// authorization server sees the same client parameters.
+		switch {
+		case cfg.OAuth != nil && cfg.OAuth.CallbackPort > 0:
 			out.RedirectURI = redirectURI(cfg.OAuth.CallbackPort)
+		case ok && entry.URL == cfg.URL && entry.RedirectURI != "":
+			out.RedirectURI = entry.RedirectURI
+		default:
+			out.RedirectURI = redirectURI(1)
 		}
 	}
 	// RefreshToken saves through this adapter but does not call GetToken,
@@ -363,7 +379,7 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	if options.ClientID == "" {
 		if err := handler.RegisterClient(ctx, "zot"); err != nil {
 			listener.Close()
-			return fmt.Errorf("client registration failed, configure oauth.clientId: %w", err)
+			return fmt.Errorf("client registration failed, configure oauth.clientId: %w", describeOAuthError(err))
 		}
 		if err := m.tokens.update(key, func(entry *storedCredentials, _ bool) {
 			entry.URL, entry.ClientID, entry.ClientSecret, entry.RedirectURI = cfg.URL, handler.GetClientID(), handler.GetClientSecret(), redirect
@@ -385,7 +401,7 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	authURL, err := handler.GetAuthorizationURL(ctx, state, transport.GenerateCodeChallenge(verifier))
 	if err != nil {
 		listener.Close()
-		return err
+		return describeOAuthError(err)
 	}
 	type callback struct{ code, err string }
 	results := make(chan callback, 1)
@@ -416,7 +432,9 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 		if result.err != "" || result.code == "" {
 			fmt.Fprintf(w, "<p>Sign-in failed: %s</p><p>You can close this window.</p>", html.EscapeString(result.err))
 		} else {
-			fmt.Fprint(w, "<p>Signed in to MCP server. You can close this window and return to zot.</p>")
+			// The token exchange has not run yet, so do not claim success.
+			// zot reports the outcome.
+			fmt.Fprint(w, "<p>Authorization received. You can close this window and return to zot, which finishes the sign-in.</p>")
 		}
 		deliver(result)
 	})}
@@ -455,11 +473,39 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 		return errors.New("authorization returned no code")
 	}
 	if err := handler.ProcessAuthorizationResponse(ctx, result.code, state, verifier); err != nil {
-		return fmt.Errorf("token exchange failed: %w", err)
+		return fmt.Errorf("token exchange failed: %w", describeOAuthError(err))
 	}
 	return m.tokens.update(key, func(entry *storedCredentials, _ bool) {
 		entry.ResourceMetadataURL = options.ProtectedResourceMetadataURL
 	})
+}
+
+// describeOAuthError keeps the structured OAuth error code and description
+// an authorization server returned, and otherwise replaces the library's
+// message, which can quote a raw response body or URL, with a short hint.
+func describeOAuthError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var oauthErr transport.OAuthError
+	if errors.As(err, &oauthErr) {
+		return fmt.Errorf("authorization server answered %s", strings.TrimPrefix(oauthErr.Error(), "OAuth error: "))
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "no such host") || strings.Contains(text, "connection refused") || strings.Contains(text, "timeout") || strings.Contains(text, "deadline"):
+		return errors.New("the authorization server could not be reached")
+	case strings.Contains(text, "metadata"):
+		return errors.New("authorization server metadata could not be discovered, configure oauth.authServerMetadataUrl")
+	case strings.Contains(text, "registration"):
+		return errors.New("the authorization server refused the client registration")
+	case strings.Contains(text, "redirect uri"):
+		return errors.New("the redirect URI is invalid, check oauth.callbackPort")
+	}
+	return errors.New("the authorization server rejected the request")
 }
 
 // parsePastedRedirect reads what the user copied from the browser: the full

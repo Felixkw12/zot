@@ -313,7 +313,7 @@ func (c *ServerConfig) validate(cwd string) error {
 			return errors.Join(missing...)
 		}
 		if c.OAuth.CallbackPort < 0 || c.OAuth.CallbackPort > 65535 {
-			return errors.New("oauth callbackPort must be between 1 and 65535")
+			return errors.New("oauth callbackPort must be between 1 and 65535, or 0 for a free port")
 		}
 	}
 	if c.ConnectTimeout == 0 {

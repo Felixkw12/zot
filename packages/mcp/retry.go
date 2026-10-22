@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,37 @@ func newRetryTransport() *retryTransport {
 	return &retryTransport{base: http.DefaultTransport, retries: 2, delay: 300 * time.Millisecond}
 }
 
+// maxRetryAfter caps a server's Retry-After so a long wait is bounded by
+// the caller's deadline rather than the header.
+const maxRetryAfter = 30 * time.Second
+
+// retryDelay returns how long to wait before the given attempt. A server's
+// Retry-After header, in seconds or as an HTTP date, overrides the default
+// backoff when it asks for a longer wait.
+func retryDelay(base time.Duration, attempt int, resp *http.Response) time.Duration {
+	delay := base * time.Duration(attempt)
+	if resp == nil {
+		return delay
+	}
+	header := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if header == "" {
+		return delay
+	}
+	var wait time.Duration
+	if seconds, err := strconv.Atoi(header); err == nil && seconds >= 0 {
+		wait = time.Duration(seconds) * time.Second
+	} else if at, err := http.ParseTime(header); err == nil {
+		wait = time.Until(at)
+	}
+	if wait > maxRetryAfter {
+		wait = maxRetryAfter
+	}
+	if wait > delay {
+		return wait
+	}
+	return delay
+}
+
 func transientStatus(code int) bool {
 	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
 }
@@ -75,10 +107,12 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var resp *http.Response
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
+			timer := time.NewTimer(retryDelay(t.delay, attempt, resp))
 			select {
 			case <-req.Context().Done():
+				timer.Stop()
 				return nil, req.Context().Err()
-			case <-time.After(t.delay * time.Duration(attempt)):
+			case <-timer.C:
 			}
 		}
 		clone := req.Clone(req.Context())
