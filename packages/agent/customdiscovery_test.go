@@ -136,6 +136,36 @@ func TestRefreshCustomProviderModelsUsesStoredKeyAndKeepsUserOverrides(t *testin
 	}
 }
 
+func TestRefreshCustomProviderModelsUsesReportedContextUnlessOverridden(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	t.Setenv("M5_API_KEY", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"qwen","max_model_len":196600},{"id":"pinned","max_model_len":196600}]}`)
+	}))
+	t.Cleanup(server.Close)
+	loadTestModelsJSON(t, fmt.Sprintf(`{"providers": {
+		"m5": {"baseUrl": %q, "discover": true, "models": [{"id": "pinned", "contextWindow": 100000, "maxTokens": 8000}]}
+	}}`, server.URL+"/v1"))
+
+	if err := RefreshCustomProviderModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	qwen, err := provider.FindModel("m5", "qwen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if qwen.Source != "live" || qwen.ContextWindow != 196600 {
+		t.Fatalf("reported context ignored: %+v", qwen)
+	}
+	pinned, err := provider.FindModel("m5", "pinned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.Source != "user" || pinned.ContextWindow != 100000 || pinned.MaxOutput != 8000 {
+		t.Fatalf("models.json override lost: %+v", pinned)
+	}
+}
+
 func TestRefreshCustomProviderModelsExplicitKeylessIgnoresStoredKey(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("M4_API_KEY", "env-key")

@@ -61,6 +61,45 @@ func TestDiscoverCustomProvider(t *testing.T) {
 	}
 }
 
+func TestDiscoverCustomProviderReadsReportedContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[
+			{"id":"omlx","owned_by":"omlx","max_model_len":196600},
+			{"id":"router","context_length":131072},
+			{"id":"gateway","context_window":65536},
+			{"id":"tiny","max_model_len":2048},
+			{"id":"bad-string","max_model_len":"196600"},
+			{"id":"bad-zero","max_model_len":0,"context_length":8192},
+			{"id":"bad-fraction","max_model_len":1.5},
+			{"id":"plain"}
+		]}`)
+	}))
+	defer server.Close()
+	models, err := DiscoverCustomProvider(context.Background(), "m5", server.URL+"/v1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][2]int{
+		"omlx":         {196600, customDiscoveryMaxOutput},
+		"router":       {131072, customDiscoveryMaxOutput},
+		"gateway":      {65536, customDiscoveryMaxOutput},
+		"tiny":         {2048, 2048},
+		"bad-string":   {customDiscoveryContextWindow, customDiscoveryMaxOutput},
+		"bad-zero":     {8192, customDiscoveryMaxOutput},
+		"bad-fraction": {customDiscoveryContextWindow, customDiscoveryMaxOutput},
+		"plain":        {customDiscoveryContextWindow, customDiscoveryMaxOutput},
+	}
+	if len(models) != len(want) {
+		t.Fatalf("models = %+v", models)
+	}
+	for _, m := range models {
+		w := want[m.ID]
+		if m.ContextWindow != w[0] || m.MaxOutput != w[1] {
+			t.Errorf("%s limits = %d/%d, want %d/%d", m.ID, m.ContextWindow, m.MaxOutput, w[0], w[1])
+		}
+	}
+}
+
 func TestDiscoverCustomProviderOmitsHeaderWithoutKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.Header["Authorization"]; ok {
