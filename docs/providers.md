@@ -619,11 +619,14 @@ environment or `auth.json` is sent as a bearer token when present. A missing key
 is not an error because local servers commonly accept unauthenticated requests.
 Background refresh never executes an `api_key_command`; opening `/model` does.
 
-Only model IDs are read from the response. Discovered models default to a
-32,768 token context and 4,096 output tokens, have zero pricing, and no
-reasoning controls. IDs containing `embed` are skipped. Entries in the
-provider's `models` array override discovered metadata for the same ID, which
-is how to raise limits or enable reasoning for a specific model.
+Besides the model ID, zot reads a context length reported per model as
+`max_model_len` (vLLM, oMLX), `context_length`, or `context_window`.
+Without one, discovered models default to a 32,768 token context. Output is
+limited to 4,096 tokens, or the context length if smaller. Discovered models
+have zero pricing and no reasoning controls. IDs containing `embed` are
+skipped. Entries in the provider's `models` array override discovered metadata
+for the same ID, which is how to raise limits or enable reasoning for a
+specific model.
 
 The discovered list stays in memory, separate from the six-hour cloud model
 cache. A failed refresh keeps the previous snapshot for that provider and
