@@ -1338,7 +1338,13 @@ By default zot loads built-in skills plus user-installed skills from:
 - `./.claude/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md` (Claude-compatible layout)
 - `./.agents/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md` (agent-compatible layout)
 
-See [docs/skills.md](docs/skills.md) for the frontmatter fields, authoring tips, and example skills under `examples/skills/`.
+Discovery skips hidden subdirectories such as `.trash`. To omit a directory
+such as Claude desktop's synced snapshots, set `"skill_exclude":
+["~/.claude/skills/synced"]` in `$ZOT_HOME/config.json`. Exclusions also apply to
+symlink aliases, the skill picker, and pins. Discovery precedence is unchanged.
+Startup diagnostics stay above the conversation instead of hiding new replies.
+
+See [docs/skills.md](docs/skills.md) for exclusion rules, frontmatter fields, authoring tips, and example skills under `examples/skills/`.
 
 ## Telegram bot (bridge)
 
