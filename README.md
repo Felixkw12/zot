@@ -308,7 +308,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
 
-When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd and `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
+When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd, except that `read` and `glob` can access loaded extension directories. `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
 
 ### Codemode
 
@@ -546,6 +546,8 @@ Choose `off`, `70%`, `80%`, `85%` (default), or `90%` under `/settings` → **au
 ### `/jail`
 
 Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
+
+As a read-only exception, `read` and `glob` can access the directories of loaded, enabled extensions, including explicit `--ext` paths and skill-only bundles. This lets skills read bundled reference files while jailed. Symlinked installations are supported, but links inside an extension cannot grant access outside the allowed roots. Reloading extensions refreshes these grants. Packaged-agent filesystem read permissions still apply. This exception does not relax `write`, `edit`, or `bash` checks, and does not authorize running bundled scripts outside the jail.
 
 This is a guardrail against accidents, not a hard security boundary. If you need real isolation, run zot under docker or a proper sandbox.
 

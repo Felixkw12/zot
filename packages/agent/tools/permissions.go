@@ -60,7 +60,7 @@ func (s *Sandbox) SetPermissions(p *PermissionSet) {
 
 func (s *Sandbox) CheckReadPath(path string) (err error) {
 	defer markPolicyError(&err)
-	if err := s.CheckPath(path); err != nil {
+	if err := s.checkPath(path, true); err != nil {
 		return err
 	}
 	if s == nil || s.Permissions == nil {

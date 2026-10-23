@@ -1173,6 +1173,8 @@ Extensions run with **the user's full filesystem and network
 permissions**. Treat installing an extension the same as installing
 any other binary on your machine.
 
+While `/jail` is active, the built-in `read` and `glob` tools may access each loaded, enabled extension's directory, including explicit `--ext` paths and skill-only bundles. This read-only exception lets skills use bundled reference files without disabling jail. It does not bypass packaged-agent filesystem read permissions or relax `write`, `edit`, or shell checks. Reading a bundled script does not authorize executing it outside the jail. Symlinked extension installations work, but symlinks within them cannot expand access beyond the allowed roots. Reloading extensions replaces the grants with the current selection.
+
 `zot ext install <git-url>` clones from any URL you give it. There's
 no sandbox in v1; if you need isolation, install only extensions you
 trust or run zot under your platform's sandboxing tool (`bwrap` /

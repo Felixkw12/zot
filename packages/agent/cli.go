@@ -100,6 +100,10 @@ type extToolAdapter struct {
 	mgr *extensions.Manager
 }
 
+func (a *extToolAdapter) ReadOnlyRoots() []string {
+	return a.mgr.ReadOnlyRoots()
+}
+
 func (a *extToolAdapter) Tools() []ExtensionToolInfo {
 	infos := a.mgr.Tools()
 	out := make([]ExtensionToolInfo, len(infos))

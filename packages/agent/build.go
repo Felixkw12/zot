@@ -89,6 +89,13 @@ func (r Resolved) HasCredential() bool {
 // effect on the second pass (existing names are preserved). Built-in
 // tools always win on conflict.
 func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
+	// Refresh even when no tools are registered, for example skill-only
+	// bundles or a reload that removed the last extension.
+	var roots []string
+	if source, ok := mgr.(interface{ ReadOnlyRoots() []string }); ok {
+		roots = source.ReadOnlyRoots()
+	}
+	r.Sandbox.SetReadOnlyRoots(roots)
 	if mgr == nil {
 		return
 	}
