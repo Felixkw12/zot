@@ -141,10 +141,17 @@ func Discover(zotHome, cwd, userHome string, includeUser bool) ([]*Skill, []erro
 // precedence order, then appends built-ins when includeUser is true or false.
 // It returns non-fatal diagnostics for malformed files and shadowed names.
 func DiscoverSources(sources []Source, includeBuiltins bool) ([]*Skill, []error) {
+	return DiscoverSourcesExcluding(sources, includeBuiltins, nil)
+}
+
+// DiscoverSourcesExcluding discovers skills while omitting the supplied paths
+// and their descendants, including symlink aliases. Paths must be absolute.
+// Built-in skills are unaffected by filesystem exclusions.
+func DiscoverSourcesExcluding(sources []Source, includeBuiltins bool, excludes []string) ([]*Skill, []error) {
 	var errs []error
 	seen := map[string]*Skill{}
 	for _, source := range sources {
-		found, scanErrs := scanSource(source)
+		found, scanErrs := scanSource(source, excludes)
 		errs = append(errs, scanErrs...)
 		for _, s := range found {
 			if prior, dup := seen[s.Name]; dup {
@@ -185,9 +192,12 @@ func sameSkillFile(a, b string) bool {
 	return aErr == nil && bErr == nil && os.SameFile(aInfo, bInfo)
 }
 
-func scanSource(source Source) ([]*Skill, []error) {
+func scanSource(source Source, excludes []string) ([]*Skill, []error) {
 	var out []*Skill
 	var errs []error
+	if excludedSkillPath(source.Root, excludes) {
+		return out, errs
+	}
 	info, err := os.Stat(source.Root)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -224,6 +234,9 @@ func scanSource(source Source) ([]*Skill, []error) {
 	var linkedDirs []string
 	var walk func(dir string)
 	walk = func(dir string) {
+		if excludedSkillPath(dir, excludes) {
+			return
+		}
 		resolved, err := filepath.EvalSymlinks(dir)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("resolve %s: %w", dir, err))
@@ -239,7 +252,15 @@ func scanSource(source Source) ([]*Skill, []error) {
 			return
 		}
 		for _, d := range entries {
+			// Skip hidden entries, including hidden symlinks.
+			// An explicitly supplied source root may itself be hidden.
+			if strings.HasPrefix(d.Name(), ".") {
+				continue
+			}
 			path := filepath.Join(dir, d.Name())
+			if excludedSkillPath(path, excludes) {
+				continue
+			}
 			if d.IsDir() {
 				walk(path)
 				continue

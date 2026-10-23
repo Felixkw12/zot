@@ -1273,8 +1273,9 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		chat = append(chat, "")
 	}
 
-	// Reload failures remain in the scrolling chat until /clear. They are
-	// host-only display state, not provider messages or persisted context.
+	// Discovery and reload failures remain above the conversation until
+	// /clear. Appending them would hide replies when diagnostics fill the
+	// viewport. They are display state, not persisted or provider context.
 	// While the latest failure is still the temporary status error, hide its
 	// stored copy to avoid painting the same message twice.
 	reloadErrors := i.reloadErrors
@@ -1282,8 +1283,8 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		reloadErrors = reloadErrors[:n-1]
 	}
 	if len(reloadErrors) > 0 {
-		chat = append(chat, renderReloadErrors(i.cfg.Theme, reloadErrors, cols)...)
-		chat = append(chat, "")
+		diagnostics := renderReloadErrors(i.cfg.Theme, reloadErrors, cols)
+		chat = append(append(diagnostics, ""), chat...)
 	}
 
 	// Strip trailing blank rows so the chat content sits flush

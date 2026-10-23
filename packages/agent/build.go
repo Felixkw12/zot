@@ -723,7 +723,7 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 			}
 		}
 		var errs []error
-		discovered, errs = skills.DiscoverSources(sources, true)
+		discovered, errs = skills.DiscoverSourcesExcluding(sources, true, resolveSkillExcludes(cfg.SkillExclude, args.CWD, homeDir))
 		for _, err := range errs {
 			skillDiagnostics = append(skillDiagnostics, err.Error())
 		}

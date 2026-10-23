@@ -33,6 +33,10 @@ type Config struct {
 	Theme       string             `json:"theme"`
 	Codemode    *codemode.Settings `json:"codemode,omitempty"`
 
+	// SkillExclude omits filesystem paths and their descendants from skill
+	// discovery. Relative paths use the session starting directory.
+	SkillExclude []string `json:"skill_exclude,omitempty"`
+
 	// ToolRender selects how tool calls are drawn in interactive mode.
 	// "box" (default, or empty) wraps each call in a bordered panel;
 	// "flat" drops the frame for a quiet header line plus indented,
