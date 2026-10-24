@@ -31,10 +31,6 @@ func (i *Interactive) showStartupChangelog(cl ChangelogPayload) {
 func (i *Interactive) startupBlockLocked(cols int) []string {
 	showVersion := !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	out := welcomeBanner(i.cfg.Theme, i.cfg.Version, showVersion)
-	out = append(out, i.startupNotes...)
-	if len(i.startupNotes) > 0 {
-		out = append(out, "")
-	}
 	out = append(out, renderUpdateBanner(i.cfg.Theme, i.updateInfo, cols)...)
 	cl := i.startupChangelog
 	if cl.Body != "" {
@@ -44,6 +40,10 @@ func (i *Interactive) startupBlockLocked(cols int) []string {
 			out = append(out, wrapDialogTextRows(i.cfg.Theme.FG256(i.cfg.Theme.Muted, cl.URL), cols)...)
 		}
 		out = append(out, renderStartupChangelogBody(cl.Body, i.cfg.Theme, cols)...)
+		out = append(out, "")
+	}
+	out = append(out, i.startupNotes...)
+	if len(i.startupNotes) > 0 {
 		out = append(out, "")
 	}
 	return out

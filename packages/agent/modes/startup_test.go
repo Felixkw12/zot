@@ -25,7 +25,7 @@ func TestStartupInformationPrecedesTranscript(t *testing.T) {
 		i.Notify("runtime", "info", "runtime notification")
 		chat := stripANSIBytes(strings.Join(i.cachedChatLocked(width), "\n"))
 		previous := -1
-		for _, text := range []string{"ask anything", "connected at startup", "delayed initialization", "update available", "release details", "discovery diagnostic", "conversation begins", "runtime notification"} {
+		for _, text := range []string{"ask anything", "update available", "release details", "connected at startup", "delayed initialization", "discovery diagnostic", "conversation begins", "runtime notification"} {
 			at := strings.Index(chat, text)
 			if at < 0 || at <= previous {
 				t.Fatalf("width %d: %q out of order or absent in %q", width, text, chat)
@@ -38,6 +38,18 @@ func TestStartupInformationPrecedesTranscript(t *testing.T) {
 		if len(ag.Messages()) != 1 {
 			t.Fatal("startup information entered model context")
 		}
+	}
+}
+
+func TestStartupNotesWithoutUpdateInformation(t *testing.T) {
+	i := NewInteractive(InteractiveConfig{})
+	i.Notify("extension", "info", "startup details")
+	chat := stripANSIBytes(strings.Join(i.startupBlockLocked(80), "\n"))
+	if !strings.Contains(chat, "see commands.\n\n[extension] startup details") {
+		t.Fatalf("extension information should directly follow the welcome text: %q", chat)
+	}
+	if strings.Contains(chat, "update available") || strings.Contains(chat, "release notes") {
+		t.Fatalf("unexpected update information: %q", chat)
 	}
 }
 
