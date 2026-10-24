@@ -2979,7 +2979,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if k.Kind == tui.KeyEsc {
 		i.clipboardImages = nil
 	}
-	if submit := i.ed.HandleKey(k); submit {
+	if submit := i.handleEditorKey(k); submit {
 		// SubmitValue() expands any [pasted text #N +L lines]
 		// placeholders back into their bodies; the raw Value()
 		// is only what the user sees on screen.
@@ -3104,7 +3104,7 @@ func (i *Interactive) pasteClipboard() {
 		return
 	}
 	if pastedText {
-		i.ed.HandleKey(key)
+		i.handleEditorKey(key)
 		i.statusErr = ""
 		i.statusOK = ""
 		return

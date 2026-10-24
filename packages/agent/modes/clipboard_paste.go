@@ -22,6 +22,17 @@ func resolveClipboardText(k tui.Key, read clipboardTextReader) (tui.Key, bool, e
 	return tui.Key{Kind: tui.KeyPaste, Paste: text}, true, nil
 }
 
+// handleEditorKey keeps shell input literal instead of treating pasted paths
+// as chat attachments. A bare ! counts while composing, but !@ is a picker.
+func (i *Interactive) handleEditorKey(k tui.Key) bool {
+	text := strings.TrimLeft(i.ed.Value(), " \t")
+	if k.Kind == tui.KeyPaste && strings.HasPrefix(text, "!") && !strings.HasPrefix(text, "!@") {
+		i.ed.Insert(k.Paste)
+		return false
+	}
+	return i.ed.HandleKey(k)
+}
+
 func singleLinePaste(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
