@@ -56,6 +56,9 @@ type InteractiveConfig struct {
 	// nil means the default, off.
 	ShowInstructionsAtStartup *bool
 
+	// ShowReasoning displays live and saved readable reasoning tails.
+	ShowReasoning bool
+
 	// InlineImagesEnabled overrides terminal image rendering. nil means
 	// auto-detect and render when supported; false disables; true uses
 	// the detected protocol when available.
@@ -410,6 +413,7 @@ type chatCacheKey struct {
 	chatTimestamps        bool
 	chatTimestampInterval int
 	chatTimestampDate     string
+	showReasoning         bool
 }
 
 // QuickModelShortcut is one configured quick model switch slot.
@@ -456,6 +460,7 @@ type Interactive struct {
 
 	mu        sync.Mutex
 	agent     *core.Agent
+	reasoning tui.ReasoningPreview
 	streaming strings.Builder // what's currently painted on screen
 	streamOn  bool
 
@@ -792,6 +797,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
+		i.agent.SetStreamReasoning(cfg.ShowReasoning)
 		i.view.Messages = cfg.Agent.Messages()
 		i.cumUsage = cfg.Agent.Cost()
 		// Rehydrate the "context used" gauge from the last persisted
@@ -1137,6 +1143,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		welcomeShowVer:        showVer,
 		expandAll:             i.view.ExpandAll,
 		tailLimit:             i.view.TailLimit,
+		showReasoning:         i.cfg.ShowReasoning,
 		chatTimestamps:        i.view.ChatTimestamps,
 		chatTimestampDate:     i.view.ChatTimestampDate,
 		chatTimestampInterval: tui.ChatTimestampInterval(i.view.ChatTimestampIntervalMinutes),
@@ -1166,6 +1173,8 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	if i.streamFlushPending && len(i.view.Messages) > 0 {
 		i.view.Messages = i.view.Messages[:len(i.view.Messages)-1]
 	}
+	i.view.ShowReasoning = i.cfg.ShowReasoning
+	i.view.Reasoning = i.reasoning.String()
 	i.view.Streaming = i.streaming.String()
 	i.view.StreamingActive = i.streamOn
 	// Guard against the narrow race where EvAssistantMessage has
@@ -3859,6 +3868,7 @@ func (i *Interactive) openSettingsDialog() {
 				i.chatTimestampDateSetting(),
 			},
 		},
+		i.reasoningPreviewSetting(),
 		{
 			key:   "show_instructions_at_startup",
 			label: "show loaded resources at startup",
@@ -4138,6 +4148,10 @@ func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
 }
 
 func (i *Interactive) applySettingToggle(key string, value bool) {
+	if key == "show_reasoning" {
+		i.applyShowReasoning(value)
+		return
+	}
 	if key == "tui_click_to_position" {
 		i.applyClickToPosition(value)
 		return
@@ -6306,6 +6320,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	// The condense flow re-fires the user's queued prompt for us, so
 	// we just hand it off and exit.
 	i.mu.Lock()
+	i.agent.SetStreamReasoning(i.cfg.ShowReasoning)
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
 		i.pendingCompactPrompt = prompt
@@ -6656,6 +6671,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	defer i.mu.Unlock()
 	switch e := ev.(type) {
 	case core.EvAssistantStart:
+		i.reasoning.Reset()
 		// Fires at the top of every oneTurn, including follow-up
 		// turns after tool use. Without this, the streaming buffer
 		// is still marked off from the previous assistant message
@@ -6676,6 +6692,16 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
 		i.toolGate = map[string]int{}
+	case core.EvError:
+		i.reasoning.Reset()
+	case core.EvDone:
+		if !i.streamFlushPending {
+			i.reasoning.Reset()
+		}
+	case core.EvReasoningDelta:
+		if i.cfg.ShowReasoning {
+			i.reasoning.Append(e.Delta)
+		}
 	case core.EvTextDelta:
 		// Buffer into streamPending; the paintPace ticker drains
 		// it into i.streaming a few runes at a time for a smooth
@@ -6785,6 +6811,9 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.lastCtxInput = e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens
 		}
 	case core.EvTurnEnd:
+		if !i.streamFlushPending {
+			i.reasoning.Reset()
+		}
 		if e.Stop == provider.StopAborted {
 			i.resetStreamingStateLocked()
 			i.statusErr = ""
@@ -7814,6 +7843,7 @@ func assistantText(m provider.Message) string {
 // queue drain) so the pacer doesn't keep draining stale runes from
 // a prior turn. Must be called with i.mu held.
 func (i *Interactive) resetStreamingStateLocked() {
+	i.reasoning.Reset()
 	i.streaming.Reset()
 	i.streamPending = i.streamPending[:0]
 	i.streamFlushPending = false
@@ -7937,6 +7967,7 @@ func (i *Interactive) runStreamPacer(ctx context.Context) {
 				// and hides the streaming overlay.
 				if i.streamFlushPending {
 					i.streamFlushPending = false
+					i.reasoning.Reset()
 					i.streaming.Reset()
 					i.streamOn = false
 					i.openAllToolGatesLocked()

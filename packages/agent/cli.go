@@ -602,7 +602,7 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	}
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
 	prompt = preloadSkillPins(args, fresh, prompt, os.Stderr)
-	err = modes.RunJSON(ctx, ag, prompt, nil, os.Stdout)
+	err = modes.RunJSONWithOptions(ctx, ag, prompt, nil, os.Stdout, modes.JSONOptions{ShowReasoning: args.ShowReasoning})
 	WriteNewTranscript(ag, sess, start)
 	return err
 }
@@ -1481,6 +1481,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		StartupExtensionErrors:        startupExtensionErrors,
 		StartupSkillNames:             startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:     initialCfg.ShowInstructionsAtStartup,
+		ShowReasoning:                 initialCfg.ShowReasoning || args.ShowReasoning,
 		ZotHome:                       ZotHome(),
 		SessionsRoot:                  agentSessionsRoot(ZotHome(), args),
 		Version:                       version,

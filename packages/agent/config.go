@@ -125,6 +125,9 @@ type Config struct {
 	// ChatTimestampDate is day_start (default) or every_message.
 	ChatTimestampDate string `json:"chat_timestamp_date,omitempty"`
 
+	// ShowReasoning displays compact live and saved reasoning tails in the interactive UI.
+	ShowReasoning bool `json:"show_reasoning,omitempty"`
+
 	// ShowInstructionsAtStartup lists loaded context files, extensions,
 	// and user-installed skills above the transcript. Off by default;
 	// nil/missing means disabled. Toggle from /settings.

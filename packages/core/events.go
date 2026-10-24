@@ -45,6 +45,13 @@ type EvTextDelta struct {
 
 func (EvTextDelta) Type() string { return "text_delta" }
 
+// EvReasoningDelta carries readable reasoning separately from answer text.
+type EvReasoningDelta struct {
+	Delta string
+}
+
+func (EvReasoningDelta) Type() string { return "reasoning_delta" }
+
 type EvToolCall struct {
 	ID   string
 	Name string

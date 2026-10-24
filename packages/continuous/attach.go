@@ -141,7 +141,7 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 	d.status(ws.describe())
 	defer d.status("")
 	seen := map[string]bool{}
-	streamed := ""
+	var streamed partialStream
 	// progress is the last committed tool output per call, so only the
 	// new tail is rendered.
 	progress := map[string]string{}
@@ -203,15 +203,7 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 			// the last one. A completed attempt clears the record and the
 			// assistant entry replaces the streamed text in the same commit.
 			if p, ok := PartialFromCommit(cm, d.ConversationID); ok && !p.Final && p.RunID != "" {
-				if strings.HasPrefix(p.Text, streamed) {
-					if delta := p.Text[len(streamed):]; delta != "" {
-						if streamed == "" {
-							sink(core.EvAssistantStart{})
-						}
-						sink(core.EvTextDelta{Delta: delta})
-					}
-				}
-				streamed = p.Text
+				streamed.apply(p, sink)
 			}
 			entries := EntriesFromCommit(cm, d.ConversationID)
 			var fresh []Entry
@@ -228,7 +220,7 @@ func (d *AttachedDriver) prompt(ctx context.Context, agent *core.Agent, prompt s
 				if e.Type == entryAssistant {
 					// The streamed text is now committed; the message event
 					// below replaces it in the view.
-					streamed = ""
+					streamed.reset()
 				}
 			}
 			ProjectEntryEvents(fresh, sink)

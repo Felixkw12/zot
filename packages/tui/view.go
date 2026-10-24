@@ -120,6 +120,8 @@ type View struct {
 	// message that originated the call. Rebuilt on each Build().
 	toolCallLabels  map[string]string
 	toolSources     map[string]string // codemode source by call ID, rebuilt on Build
+	ShowReasoning   bool              // show saved readable reasoning before assistant replies
+	Reasoning       string            // bounded live reasoning tail
 	Streaming       string            // current assistant text delta
 	StreamingActive bool
 	ToolCalls       []ToolCallView // tool calls in flight or completed
@@ -199,9 +201,10 @@ type View struct {
 // unambiguous enough for the cache (collisions produce a stale frame,
 // not wrong data, and we recompute on invalidation anyway).
 type msgCacheKey struct {
-	hash      uint64
-	width     int
-	expandAll bool
+	hash          uint64
+	width         int
+	expandAll     bool
+	showReasoning bool
 	// turnOpen is true when the previous rendered message belongs to
 	// the same agent turn (assistant tool_use, or tool result). The
 	// header ("▍ zot") is suppressed in that case so a single turn
@@ -280,7 +283,7 @@ func (v *View) Build(width int) []string {
 // so native scrolling stays stable while a turn streams.
 func (v *View) BuildLive(width int) []string {
 	v.prepareLiveBodyHeights()
-	var out []string
+	out := RenderReasoningPreview(v.Reasoning, v.Theme, width)
 	if v.StreamingActive && strings.TrimSpace(v.Streaming) != "" {
 		const indent = "  "
 		inner := assistantBodyWidth(width - len(indent))
@@ -457,6 +460,7 @@ func (v *View) BuildWithAnchors(width int) ([]string, []MessageAnchor) {
 		}
 		out = append(out, separator)
 	}
+	out = append(out, RenderReasoningPreview(v.Reasoning, v.Theme, width)...)
 	// Only render the streaming header/body when there's actual
 	// text to show. An empty streaming block (streamOn=true,
 	// Streaming="") appears when a turn starts with a tool_use
@@ -554,10 +558,11 @@ func (v *View) refreshToolPaths() {
 // shared slice is safe.
 func (v *View) renderMessageCached(m provider.Message, width int, turnOpen bool) []string {
 	key := msgCacheKey{
-		hash:      hashMessage(m),
-		width:     width,
-		expandAll: v.ExpandAll,
-		turnOpen:  turnOpen,
+		hash:          hashMessage(m),
+		width:         width,
+		expandAll:     v.ExpandAll,
+		showReasoning: v.ShowReasoning,
+		turnOpen:      turnOpen,
 	}
 	for _, content := range m.Content {
 		if result, ok := content.(provider.ToolResultBlock); ok {
@@ -604,6 +609,8 @@ func hashMessage(m provider.Message) uint64 {
 	h = fnv64aWrite(h, []byte(m.Role))
 	h = fnv64aWriteByte(h, 0)
 	h = fnv64aWrite(h, []byte(m.Meta[provider.NestedToolCallsMetaKey]))
+	h = fnv64aWriteByte(h, 0)
+	h = fnv64aWrite(h, []byte(m.ReadableReasoning()))
 	h = fnv64aWriteByte(h, 0)
 	for _, c := range m.Content {
 		switch b := c.(type) {
@@ -775,6 +782,9 @@ func (v *View) renderMessage(m provider.Message, width int, turnOpen bool) []str
 		_ = turnOpen
 		const indent = "  "
 		inner := assistantBodyWidth(width - len(indent))
+		if v.ShowReasoning {
+			lines = append(lines, renderReasoningSummary(m.ReadableReasoning(), v.Theme, width)...)
+		}
 		for _, c := range m.Content {
 			switch b := c.(type) {
 			case provider.TextBlock:

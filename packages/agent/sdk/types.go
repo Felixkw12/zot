@@ -18,7 +18,7 @@ type Event struct {
 	Step int    `json:"step,omitempty"`
 	Time string `json:"time,omitempty"`
 
-	// text_delta
+	// text_delta / reasoning_delta
 	Delta string `json:"delta,omitempty"`
 
 	// tool_call
@@ -137,6 +137,8 @@ func toEvent(ev core.AgentEvent) Event {
 	case core.EvAssistantMessage:
 		out.Message = &Message{Role: string(e.Message.Role), Content: convertContent(e.Message.Content)}
 	case core.EvTextDelta:
+		out.Delta = e.Delta
+	case core.EvReasoningDelta:
 		out.Delta = e.Delta
 	case core.EvToolCall:
 		out.ID = e.ID

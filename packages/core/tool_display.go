@@ -6,17 +6,19 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
-// withoutToolDisplay removes UI-only execution records from model inputs while
-// preserving metadata needed for provider replay and tool-state restoration.
+// withoutToolDisplay removes UI-only execution records and reasoning tails
+// from model inputs, preserving provider replay and tool-state metadata.
 func withoutToolDisplay(messages []provider.Message) []provider.Message {
 	out := append([]provider.Message(nil), messages...)
 	for i, message := range out {
-		if _, exists := message.Meta[provider.NestedToolCallsMetaKey]; !exists {
+		_, nested := message.Meta[provider.NestedToolCallsMetaKey]
+		_, reasoning := message.Meta[provider.ReadableReasoningMetaKey]
+		if !nested && !reasoning {
 			continue
 		}
-		out[i].Meta = make(map[string]string, len(message.Meta)-1)
+		out[i].Meta = make(map[string]string, len(message.Meta))
 		for key, value := range message.Meta {
-			if key != provider.NestedToolCallsMetaKey {
+			if key != provider.NestedToolCallsMetaKey && key != provider.ReadableReasoningMetaKey {
 				out[i].Meta[key] = value
 			}
 		}

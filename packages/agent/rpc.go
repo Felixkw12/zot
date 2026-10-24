@@ -359,10 +359,14 @@ func (s *rpcServer) runPrompt(id, message string, images []struct {
 		imgs = append(imgs, provider.ImageBlock{MimeType: im.MimeType, Data: im.Data})
 	}
 
+	s.agent.SetStreamReasoning(s.args.ShowReasoning)
 	err := s.agent.Prompt(subCtx, message, imgs, func(ev core.AgentEvent) {
 		// EvDone is emitted by the agent loop and we re-emit our own
 		// 'done' below; suppressing it here avoids duplicate frames.
 		if _, ok := ev.(core.EvDone); ok {
+			return
+		}
+		if _, ok := ev.(core.EvReasoningDelta); ok && !s.args.ShowReasoning {
 			return
 		}
 		s.writeEvent(modes.EventToJSON(ev))

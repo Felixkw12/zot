@@ -49,6 +49,7 @@ type Args struct {
 	// value is an intentional override, distinct from leaving the flag absent.
 	SystemPromptSet    bool
 	AppendSystemPrompt []string
+	ShowReasoning      bool
 	Reasoning          string
 	Temperature        *float32
 
@@ -301,6 +302,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoYolo = true
 		case "-y", "--yes":
 			a.Yes = true
+		case "--show-reasoning":
+			a.ShowReasoning = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -524,6 +527,7 @@ func printHelp(out *os.File, version string) {
 		row{"--api-key KEY", "api key for this run (env / auth.json fallback)"},
 		row{"--base-url URL", "override provider api base url"},
 		row{"--insecure", "skip TLS certificate verification (for self-signed-cert endpoints)"},
+		row{"--show-reasoning", "show live and saved reasoning (also opt in to JSON/RPC reasoning events)"},
 		row{"--reasoning off|minimum|low|medium|high|xhigh|max", "set reasoning level on supported models"},
 		row{"--temperature N", "sampling temperature, 0 to 2 (omit for provider default)"},
 	)

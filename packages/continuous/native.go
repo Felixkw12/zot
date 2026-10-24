@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/patriceckhart/zot/packages/continuous/storage"
@@ -787,6 +788,8 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 	startBackground := !tc.Interrupted && !backgroundRunning && policy.BackgroundTokens > 0 && estimateTokens(agent.Messages())+len(agent.System)/4 > policy.BackgroundTokens
 	// Durable retries replace the agent's in-memory ones.
 	agent.MaxRetries = 0
+	// Partial records serve attached views, including views joining mid-call.
+	agent.SetStreamReasoning(x.opts.PartialFlushInterval >= 0)
 	interrupted := tc.Interrupted
 	err = tc.StartEffect(ctx, nil, func(tx *TaskTx) error {
 		if !interrupted {
@@ -822,6 +825,11 @@ func (x *NativeExecutor) request(ctx context.Context, tc TaskContext) (Next, err
 		case core.EvUsage:
 			if !e.Auxiliary {
 				usage, usageKnown = usage.Add(e.Usage), true
+			}
+		case core.EvReasoningDelta:
+			if partial != nil {
+				partial.addReasoning(e.Delta, ev)
+				return
 			}
 		case core.EvTextDelta:
 			if partial != nil {
@@ -1906,14 +1914,16 @@ func (x *NativeExecutor) subagentResult(ctx context.Context, tc TaskContext) (Ne
 // is refused by the fence, so it cannot overwrite a newer attempt or a
 // terminal result.
 type taskPartial struct {
-	tc       TaskContext
-	base     Partial
-	gate     *eventGate
-	interval time.Duration
-	mu       sync.Mutex
-	buf      strings.Builder
-	dirty    bool
-	trunc    bool
+	tc             TaskContext
+	base           Partial
+	gate           *eventGate
+	interval       time.Duration
+	mu             sync.Mutex
+	buf            strings.Builder
+	reasoning      string
+	reasoningBytes int64
+	dirty          bool
+	trunc          bool
 	// wake signals the loop that new text arrived; it holds at most one
 	// pending signal.
 	wake chan struct{}
@@ -1958,6 +1968,32 @@ func (p *taskPartial) add(delta string, ev core.AgentEvent) {
 		delta, p.trunc = delta[:room], true
 	}
 	p.buf.WriteString(delta)
+	p.dirty = true
+	if p.wake != nil {
+		select {
+		case p.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// addReasoning retains a rolling suffix so long thinking runs remain live.
+func (p *taskPartial) addReasoning(delta string, ev core.AgentEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gate.hold(ev)
+	p.reasoningBytes += int64(len(delta))
+	if len(delta) > MaxPartialReasoningBytes {
+		delta = delta[len(delta)-MaxPartialReasoningBytes:]
+		p.reasoning = ""
+	}
+	p.reasoning += delta
+	if len(p.reasoning) > MaxPartialReasoningBytes {
+		p.reasoning = p.reasoning[len(p.reasoning)-MaxPartialReasoningBytes:]
+	}
+	for len(p.reasoning) > 0 && !utf8.RuneStart(p.reasoning[0]) {
+		p.reasoning = p.reasoning[1:]
+	}
 	p.dirty = true
 	if p.wake != nil {
 		select {
@@ -2020,6 +2056,7 @@ func (p *taskPartial) flush() int {
 	}
 	rec := p.base
 	rec.Text, rec.Truncated, rec.Updated = p.buf.String(), p.trunc, time.Now().UTC()
+	rec.Reasoning, rec.ReasoningBytes = p.reasoning, p.reasoningBytes
 	p.dirty = false
 	// Text and held events are captured under one lock, so the events
 	// released below are exactly those whose text this commit records.
@@ -2031,7 +2068,7 @@ func (p *taskPartial) flush() int {
 	}) == nil {
 		p.gate.release(upto)
 	}
-	return len(rec.Text)
+	return len(rec.Text) + len(rec.Reasoning)
 }
 
 func (p *taskPartial) stop() {
