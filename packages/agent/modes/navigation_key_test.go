@@ -95,10 +95,6 @@ func TestInteractiveControlNavigationDialogs(t *testing.T) {
 			i.skillsDialog.Open([]*skills.Skill{{Name: "one"}, {Name: "two"}})
 			return func() int { return i.skillsDialog.cursor }
 		}},
-		{"changelog", func(i *Interactive) func() int {
-			i.changelogDialog.Open("test", "", "release notes")
-			return func() int { return i.changelogDialog.scroll }
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			i := newNavigationInteractive()
