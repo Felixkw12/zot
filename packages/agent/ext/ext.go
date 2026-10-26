@@ -665,6 +665,18 @@ func (e *Extension) Notify(level, message string) {
 	})
 }
 
+// NotifyStartup pushes an initialization note below the welcome banner, even
+// when background initialization finishes after the user starts chatting.
+// Older hosts display it as an ordinary notification.
+func (e *Extension) NotifyStartup(level, message string) {
+	_ = e.send(extproto.NotifyFromExt{
+		Type:    "notify",
+		Level:   level,
+		Message: message,
+		Startup: true,
+	})
+}
+
 // Run starts the protocol loop. Blocks until stdin closes (zot has
 // shut us down). Returns the first fatal error, or nil on clean exit.
 func (e *Extension) Run() error {

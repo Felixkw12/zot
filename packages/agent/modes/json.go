@@ -10,9 +10,19 @@ import (
 	"github.com/patriceckhart/zot/packages/provider"
 )
 
-// RunJSON runs the agent to completion, writing one JSON object per
-// AgentEvent as newline-delimited JSON.
+// JSONOptions controls optional events in the JSON stream.
+type JSONOptions struct {
+	ShowReasoning bool
+}
+
+// RunJSON runs the agent to completion using the default event schema.
 func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer) error {
+	return RunJSONWithOptions(ctx, ag, prompt, images, out, JSONOptions{})
+}
+
+// RunJSONWithOptions runs the agent with explicitly enabled optional events.
+func RunJSONWithOptions(ctx context.Context, ag *core.Agent, prompt string, images []provider.ImageBlock, out io.Writer, opts JSONOptions) error {
+	ag.SetStreamReasoning(opts.ShowReasoning)
 	enc := json.NewEncoder(out)
 	write := func(v any) {
 		_ = enc.Encode(v)
@@ -20,6 +30,9 @@ func RunJSON(ctx context.Context, ag *core.Agent, prompt string, images []provid
 
 	var runErr error
 	sink := func(ev core.AgentEvent) {
+		if _, ok := ev.(core.EvReasoningDelta); ok && !opts.ShowReasoning {
+			return
+		}
 		write(EventToJSON(ev))
 	}
 
@@ -48,6 +61,8 @@ func EventToJSON(ev core.AgentEvent) map[string]any {
 		m["content"] = ContentToJSON(e.Message.Content)
 		m["time"] = e.Message.Time
 	case core.EvTextDelta:
+		m["delta"] = e.Delta
+	case core.EvReasoningDelta:
 		m["delta"] = e.Delta
 	case core.EvToolUseStart:
 		m["id"] = e.ID

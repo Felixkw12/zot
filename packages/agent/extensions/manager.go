@@ -1082,7 +1082,13 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 		case "notify":
 			var n extproto.NotifyFromExt
 			if err := json.Unmarshal(line, &n); err == nil {
-				m.hooks.Notify(ext.Manifest.Name, n.Level, n.Message)
+				if startup, ok := m.hooks.(interface {
+					NotifyStartup(string, string, string)
+				}); n.Startup && ok {
+					startup.NotifyStartup(ext.Manifest.Name, n.Level, n.Message)
+				} else {
+					m.hooks.Notify(ext.Manifest.Name, n.Level, n.Message)
+				}
 			}
 		case "clear_notes":
 			m.hooks.ClearNotes(ext.Manifest.Name)

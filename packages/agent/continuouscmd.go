@@ -56,7 +56,7 @@ Usage:
   zot continuous reorder <submission-id> --store <directory>
   zot continuous outbox --store <directory>
   zot continuous retain [--dedup 720h] [--approvals 720h] [--partials 24h] [--memos 720h] [--document-history 50] [--dry-run] --store <directory>
-  zot --continuous <socket|host:port> [--continuous-workspace <id>] [--continuous-token-file <file>]
+  zot --continuous <socket|host:port> [--continuous-workspace <id> | --continuous-conversation <id>] [--continuous-token-file <file>]
 
 Options:
   --durability strict|process   Writes only. Default strict, Windows requires process (journal).

@@ -48,6 +48,11 @@ func (h *interactiveExtHooks) Notify(extName, level, message string) {
 		iv.Notify(extName, level, message)
 	}
 }
+func (h *interactiveExtHooks) NotifyStartup(extName, level, message string) {
+	if iv := h.iv(); iv != nil {
+		iv.NotifyStartup(extName, level, message)
+	}
+}
 func (h *interactiveExtHooks) Submit(text string) {
 	if iv := h.iv(); iv != nil {
 		iv.SubmitOrQueue(text, nil)
@@ -602,7 +607,7 @@ func runJSONMode(ctx context.Context, args Args, version string) error {
 	}
 	reloadResourcesAfterStartupPre(ctx, args, extMgr, r.Sandbox, ag)
 	prompt = preloadSkillPins(args, fresh, prompt, os.Stderr)
-	err = modes.RunJSON(ctx, ag, prompt, nil, os.Stdout)
+	err = modes.RunJSONWithOptions(ctx, ag, prompt, nil, os.Stdout, modes.JSONOptions{ShowReasoning: args.ShowReasoning})
 	WriteNewTranscript(ag, sess, start)
 	return err
 }
@@ -1342,8 +1347,8 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 	}()
 
 	// Changelog: when the running version differs from the last
-	// version whose release notes the user dismissed, fetch the
-	// release body from GitHub and have the TUI show it once. On
+	// version whose release notes were shown, fetch the release body
+	// from GitHub and add it to the TUI startup section once. On
 	// first-ever launch (no prior LastChangelogShown), seed the
 	// stored version silently — don't dump release notes at someone
 	// who just installed.
@@ -1363,7 +1368,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			return
 		}
 		// For dev builds (0.0.0), skip if the latest release was
-		// already shown (stored by the dismiss callback).
+		// already shown (stored by the release-notes callback).
 		if version == "0.0.0" && info.Version == cfg.LastChangelogShown {
 			return
 		}
@@ -1481,6 +1486,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 		StartupExtensionErrors:        startupExtensionErrors,
 		StartupSkillNames:             startupSkillNames(startupSkills),
 		ShowInstructionsAtStartup:     initialCfg.ShowInstructionsAtStartup,
+		ShowReasoning:                 initialCfg.ShowReasoning || args.ShowReasoning,
 		ZotHome:                       ZotHome(),
 		SessionsRoot:                  agentSessionsRoot(ZotHome(), args),
 		Version:                       version,

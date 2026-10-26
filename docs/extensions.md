@@ -584,10 +584,25 @@ Closes a previously-open panel.
  "message":"refreshed cache (12 entries)"}
 ```
 
-`level` is one of `info`, `success`, `warn`, `error`. The note shows
-up below the transcript with the extension's name in brackets. Notes
-are one-shot: they clear automatically when the user sends their next
-prompt (and on `esc` / `/clear`).
+`level` is one of `info`, `success`, `warn`, `error`. In interactive mode,
+notifications received before the first prompt, slash command, or shell command
+appear below the welcome text, above the conversation. Later notifications
+remain below the transcript and clear on the next prompt, `esc`, or `/clear`.
+Command `display` responses always use the runtime notes area.
+
+For asynchronous initialization, explicitly mark startup notifications so they
+stay above the conversation even after the user starts chatting:
+
+```json
+{"type":"notify","level":"success","message":"connected","startup":true}
+```
+
+Go SDK: `e.NotifyStartup("success", "connected")`. Startup notes survive prompts
+and `esc`, but `/clear` and `clear_notes` remove them. They are display-only,
+not model context or persisted transcript entries. The optional `startup` field
+is backward compatible. Older hosts treat it as an ordinary notification.
+Without the field, zot cannot identify delayed initialization after interaction
+has begun. Non-interactive modes retain ordinary notification behavior.
 
 #### `clear_notes` (one-way, any time)
 

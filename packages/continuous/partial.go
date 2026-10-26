@@ -14,11 +14,16 @@ import (
 // model context: the next request never includes partial output, and the
 // record is removed when the attempt commits its final entry.
 type Partial struct {
-	ConversationID string    `json:"conversation_id"`
-	RunID          string    `json:"run_id"`
-	Turn           int       `json:"turn"`
-	Attempt        int       `json:"attempt"`
-	Text           string    `json:"text"`
+	ConversationID string `json:"conversation_id"`
+	RunID          string `json:"run_id"`
+	Turn           int    `json:"turn"`
+	Attempt        int    `json:"attempt"`
+	Text           string `json:"text"`
+	// Reasoning is a bounded readable suffix, separate from model context.
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningBytes counts all reasoning bytes, including discarded prefixes.
+	// Attached clients use it to avoid replaying overlapping suffixes.
+	ReasoningBytes int64     `json:"reasoning_bytes,omitempty"`
 	Updated        time.Time `json:"updated"`
 	// Final marks the record as the retained output of an attempt that did
 	// not complete. Live records are not final.
@@ -28,9 +33,12 @@ type Partial struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
-// MaxPartialBytes bounds a persisted partial record. Output beyond it is
-// streamed to live observers but not committed.
+// MaxPartialBytes bounds answer text in a persisted partial record.
+// Output beyond it is streamed to live observers but not committed.
 const MaxPartialBytes = 256 << 10
+
+// MaxPartialReasoningBytes bounds the live reasoning suffix independently.
+const MaxPartialReasoningBytes = 32 << 10
 
 func partialKey(conversationID string) string { return "partial/" + conversationID }
 

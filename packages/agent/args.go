@@ -49,6 +49,7 @@ type Args struct {
 	// value is an intentional override, distinct from leaving the flag absent.
 	SystemPromptSet    bool
 	AppendSystemPrompt []string
+	ShowReasoning      bool
 	Reasoning          string
 	Temperature        *float32
 
@@ -65,9 +66,12 @@ type Args struct {
 	// shared secret for token-protected hosts.
 	Continuous          string
 	ContinuousWorkspace string
-	ContinuousToken     string
-	ContinuousTokenFile string
-	ContinuousTLSCA     string
+	// ContinuousConversation attaches to one existing conversation by ID,
+	// such as a fork or an owned subagent, instead of a workspace root.
+	ContinuousConversation string
+	ContinuousToken        string
+	ContinuousTokenFile    string
+	ContinuousTLSCA        string
 
 	CWD              string
 	NoTools          bool
@@ -198,6 +202,12 @@ func ParseArgs(in []string) (Args, error) {
 				return a, err
 			}
 			a.ContinuousWorkspace = v
+		case "--continuous-conversation":
+			v, err := want(&i, arg)
+			if err != nil {
+				return a, err
+			}
+			a.ContinuousConversation = v
 		case "--continuous-token":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -292,6 +302,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoYolo = true
 		case "-y", "--yes":
 			a.Yes = true
+		case "--show-reasoning":
+			a.ShowReasoning = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -379,6 +391,11 @@ func ParseArgs(in []string) (Args, error) {
 		if a.Continue || a.Resume || a.Session != "" {
 			return a, fmt.Errorf("--continuous uses the host's store; session flags do not apply")
 		}
+		if a.ContinuousConversation != "" && a.ContinuousWorkspace != "" {
+			return a, fmt.Errorf("use --continuous-workspace or --continuous-conversation, not both")
+		}
+	} else if a.ContinuousConversation != "" {
+		return a, fmt.Errorf("--continuous-conversation requires --continuous")
 	}
 	if a.StatsPath != "" && a.Mode != ModePrint {
 		return a, fmt.Errorf("--stats requires -p or --print")
@@ -491,7 +508,7 @@ func printHelp(out *os.File, version string) {
 		row{"zot continuous run --resume --store <dir>", "continue an interrupted run"},
 		row{"zot continuous serve --store <dir>", "host a store for attachable clients"},
 		row{"zot continuous attach \"<prompt>\" --socket <path> --workspace <id>", "submit to a running host"},
-		row{"zot --continuous <socket|host:port> [--continuous-workspace <id>]", "interactive TUI attached to a running host"},
+		row{"zot --continuous <socket|host:port> [--continuous-workspace <id> | --continuous-conversation <id>]", "interactive TUI attached to a running host"},
 		row{"zot continuous --help", "import/export, inspection, backup and restore"},
 	)
 	section("telegram",
@@ -510,6 +527,7 @@ func printHelp(out *os.File, version string) {
 		row{"--api-key KEY", "api key for this run (env / auth.json fallback)"},
 		row{"--base-url URL", "override provider api base url"},
 		row{"--insecure", "skip TLS certificate verification (for self-signed-cert endpoints)"},
+		row{"--show-reasoning", "show live and saved reasoning (also opt in to JSON/RPC reasoning events)"},
 		row{"--reasoning off|minimum|low|medium|high|xhigh|max", "set reasoning level on supported models"},
 		row{"--temperature N", "sampling temperature, 0 to 2 (omit for provider default)"},
 	)

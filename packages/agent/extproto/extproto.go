@@ -144,6 +144,8 @@ type NotifyFromExt struct {
 	Type    string `json:"type"`
 	Level   string `json:"level"`
 	Message string `json:"message"`
+	// Startup keeps delayed initialization notes above the conversation.
+	Startup bool `json:"startup,omitempty"`
 }
 
 // ClearNotesFromExt is a spontaneous frame an extension can send to

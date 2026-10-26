@@ -163,7 +163,8 @@ type codexTool struct {
 }
 
 type codexReasoningConfig struct {
-	Effort string `json:"effort,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type codexRequest struct {
@@ -214,8 +215,11 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 		if hasReasoningLevelOverride(m, req.Reasoning) {
 			effort = reasoning
 		}
-		if effort != "" {
+		if effort != "" || req.StreamReasoning {
 			body.Reasoning = &codexReasoningConfig{Effort: effort}
+			if req.StreamReasoning {
+				body.Reasoning.Summary = "auto"
+			}
 		}
 	}
 	grammar := grammarTools(req.Tools, supportsGrammarTools(m, c.grammarProvider(), true))
@@ -281,8 +285,8 @@ func (c *codexClient) buildRequest(req Request) (*codexRequest, error) {
 			for _, c := range msg.Content {
 				switch v := c.(type) {
 				case ReasoningBlock:
-					// MiniMax signatures and replay IDs are not Responses items.
-					if v.ID == miniMaxThinkingID {
+					// Foreign protocol signatures and replay IDs are not Responses items.
+					if v.ID == miniMaxThinkingID || v.ID == bedrockReasoningID || v.ID == bedrockRedactedReasoningID {
 						continue
 					}
 					item := codexReasoningItem{
@@ -678,6 +682,7 @@ func (c *codexClient) runStream(ctx context.Context, resp *http.Response, req Re
 				_ = json.Unmarshal([]byte(ev.Data), &p)
 				if it, ok := items[p.OutputIndex]; ok && it.kind == "reasoning" {
 					it.summary.WriteString(p.Delta)
+					out <- EventReasoningDelta{Delta: p.Delta}
 				}
 			case "response.reasoning_summary_text.done":
 				// summary text already accumulated via deltas

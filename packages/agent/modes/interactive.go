@@ -56,6 +56,9 @@ type InteractiveConfig struct {
 	// nil means the default, off.
 	ShowInstructionsAtStartup *bool
 
+	// ShowReasoning displays live and saved readable reasoning tails.
+	ShowReasoning bool
+
 	// InlineImagesEnabled overrides terminal image rendering. nil means
 	// auto-detect and render when supported; false disables; true uses
 	// the detected protocol when available.
@@ -331,13 +334,13 @@ type InteractiveConfig struct {
 	PreloadPinnedSkills bool
 
 	// ChangelogChan, if non-nil, delivers release-notes for the
-	// current binary version once at startup. Interactive opens a
-	// dismissible overlay when the channel produces a non-empty
-	// body. Receiver fires at most once.
+	// current binary version once at startup. Interactive places them
+	// below the welcome banner without taking keyboard focus.
+	// Receiver fires at most once.
 	ChangelogChan <-chan ChangelogPayload
 
-	// OnChangelogDismiss, if non-nil, is called once the user
-	// closes the changelog overlay. The cli wires this to a
+	// OnChangelogDismiss, if non-nil, is called once release notes are
+	// placed in the startup section. The cli wires this to a
 	// MarkChangelogShown call so the same version doesn't show
 	// again on the next launch.
 	OnChangelogDismiss func()
@@ -399,6 +402,8 @@ type chatCacheKey struct {
 	statusErr             string
 	help                  string
 	extNotes              string
+	startupNotes          string
+	startupChangelog      ChangelogPayload
 	reloadErrors          string
 	updateAvailable       bool
 	updateCurrent         string
@@ -410,6 +415,7 @@ type chatCacheKey struct {
 	chatTimestamps        bool
 	chatTimestampInterval int
 	chatTimestampDate     string
+	showReasoning         bool
 }
 
 // QuickModelShortcut is one configured quick model switch slot.
@@ -456,6 +462,7 @@ type Interactive struct {
 
 	mu        sync.Mutex
 	agent     *core.Agent
+	reasoning tui.ReasoningPreview
 	streaming strings.Builder // what's currently painted on screen
 	streamOn  bool
 
@@ -570,7 +577,6 @@ type Interactive struct {
 	jumpDialog        *jumpDialog
 	btwDialog         *btwDialog
 	skillsDialog      *skillsDialog
-	changelogDialog   *changelogDialog
 	confirmDialog     *confirmDialog
 	logoutDialog      *logoutDialog
 	telegramDialog    *telegramDialog
@@ -643,6 +649,11 @@ type Interactive struct {
 	// Notify / Display. They live above the editor (just below the
 	// transcript) until cleared by /clear or another reset.
 	extNotes []string
+
+	// Startup notes stay above the conversation, including late explicit notes.
+	startupNotes     []string
+	startupComplete  bool
+	startupChangelog ChangelogPayload
 
 	// reloadErrors are host-only resource discovery and reload failures. They
 	// stay in the scrolling chat until /clear without entering the transcript.
@@ -758,7 +769,6 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 		jumpDialog:        newJumpDialog(),
 		btwDialog:         newBtwDialog(),
 		skillsDialog:      newSkillsDialog(),
-		changelogDialog:   newChangelogDialog(),
 		confirmDialog:     newConfirmDialog(),
 		logoutDialog:      newLogoutDialog(),
 		telegramDialog:    newTelegramDialog(),
@@ -792,6 +802,7 @@ func NewInteractive(cfg InteractiveConfig) *Interactive {
 	}
 	if cfg.Agent != nil {
 		i.agent = cfg.Agent
+		i.agent.SetStreamReasoning(cfg.ShowReasoning)
 		i.view.Messages = cfg.Agent.Messages()
 		i.cumUsage = cfg.Agent.Cost()
 		// Rehydrate the "context used" gauge from the last persisted
@@ -1050,8 +1061,7 @@ func (i *Interactive) Run(ctx context.Context) error {
 			updates = nil // single-shot; subsequent iterations skip this case
 		case cl, ok := <-changelog:
 			if ok && cl.Body != "" {
-				i.changelogDialog.Open(cl.Version, cl.URL, cl.Body)
-				i.invalidate()
+				i.showStartupChangelog(cl)
 			}
 			changelog = nil // single-shot
 		case <-i.dirty:
@@ -1121,7 +1131,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 	if i.agent != nil {
 		rev = i.agent.Revision()
 	}
-	showVer := len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 && !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
+	showVer := !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
 	return chatCacheKey{
 		cols:                  cols,
 		agentRev:              rev,
@@ -1129,6 +1139,8 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		statusErr:             i.statusErr,
 		help:                  strings.Join(i.helpBlock, "\n"),
 		extNotes:              strings.Join(i.extNotes, "\n"),
+		startupNotes:          strings.Join(i.startupNotes, "\n"),
+		startupChangelog:      i.startupChangelog,
 		reloadErrors:          strings.Join(i.reloadErrors, "\n"),
 		updateAvailable:       i.updateInfo.Available,
 		updateCurrent:         i.updateInfo.Current,
@@ -1137,6 +1149,7 @@ func (i *Interactive) chatCacheKeyLocked(cols int) (chatCacheKey, bool) {
 		welcomeShowVer:        showVer,
 		expandAll:             i.view.ExpandAll,
 		tailLimit:             i.view.TailLimit,
+		showReasoning:         i.cfg.ShowReasoning,
 		chatTimestamps:        i.view.ChatTimestamps,
 		chatTimestampDate:     i.view.ChatTimestampDate,
 		chatTimestampInterval: tui.ChatTimestampInterval(i.view.ChatTimestampIntervalMinutes),
@@ -1166,6 +1179,8 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	if i.streamFlushPending && len(i.view.Messages) > 0 {
 		i.view.Messages = i.view.Messages[:len(i.view.Messages)-1]
 	}
+	i.view.ShowReasoning = i.cfg.ShowReasoning
+	i.view.Reasoning = i.reasoning.String()
 	i.view.Streaming = i.streaming.String()
 	i.view.StreamingActive = i.streamOn
 	// Guard against the narrow race where EvAssistantMessage has
@@ -1217,25 +1232,6 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 	i.liveBlock = nil
 	chat := i.view.Build(cols)
 
-	// Welcome banner: shown at the top of the chat area when there is
-	// no transcript yet. Disappears after the first message is sent.
-	// The version suffix is shown for welcomeVersionDuration after
-	// startup, then drops off automatically.
-	if len(i.view.Messages) == 0 && !i.streamOn && len(i.toolOrder) == 0 {
-		showVer := !i.welcomeStart.IsZero() && time.Since(i.welcomeStart) < welcomeVersionDuration
-		chat = append(welcomeBanner(i.cfg.Theme, i.cfg.Version, showVer), chat...)
-	}
-
-	// Update-available banner: prepended above everything else so it's
-	// the first thing the user sees when opening a new zot session.
-	// Once rendered, it stays until the user updates to a newer
-	// version — we don't persist a "dismissed" flag because this is
-	// cheap and re-showing it is how most users remember to update.
-	if i.updateInfo.Available {
-		banner := renderUpdateBanner(i.cfg.Theme, i.updateInfo, cols)
-		chat = append(banner, chat...)
-	}
-
 	// /help block: appended to the transcript so it appears at the
 	// bottom of the chat area (right above the status bar / editor).
 	// Prepending it would push long conversations off the top of the
@@ -1273,8 +1269,9 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		chat = append(chat, "")
 	}
 
-	// Reload failures remain in the scrolling chat until /clear. They are
-	// host-only display state, not provider messages or persisted context.
+	// Discovery and reload failures remain above the conversation until
+	// /clear. Appending them would hide replies when diagnostics fill the
+	// viewport. They are display state, not persisted or provider context.
 	// While the latest failure is still the temporary status error, hide its
 	// stored copy to avoid painting the same message twice.
 	reloadErrors := i.reloadErrors
@@ -1282,9 +1279,13 @@ func (i *Interactive) buildChatLocked(cols int) []string {
 		reloadErrors = reloadErrors[:n-1]
 	}
 	if len(reloadErrors) > 0 {
-		chat = append(chat, renderReloadErrors(i.cfg.Theme, reloadErrors, cols)...)
-		chat = append(chat, "")
+		diagnostics := renderReloadErrors(i.cfg.Theme, reloadErrors, cols)
+		chat = append(append(diagnostics, ""), chat...)
 	}
+
+	// Startup information always precedes the conversation, even when it
+	// arrives after the first prompt. Runtime notes remain near the editor.
+	chat = append(i.startupBlockLocked(cols), chat...)
 
 	// Strip trailing blank rows so the chat content sits flush
 	// against the new "blank above status bar" row added by the
@@ -1463,8 +1464,6 @@ func (i *Interactive) redraw() {
 		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
 	case i.skillsDialog.Active():
 		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
-	case i.changelogDialog.Active():
-		dialog = i.changelogDialog.Render(i.cfg.Theme, cols)
 	case i.logoutDialog.Active():
 		dialog = i.logoutDialog.Render(i.cfg.Theme, cols)
 	case i.telegramDialog.Active():
@@ -2239,7 +2238,6 @@ func (i *Interactive) confirmChildActive() bool {
 		i.jumpDialog.Active() ||
 		i.btwDialog.Active() ||
 		i.skillsDialog.Active() ||
-		i.changelogDialog.Active() ||
 		i.logoutDialog.Active() ||
 		i.telegramDialog.Active() ||
 		i.settingsDialog.Active() ||
@@ -2262,7 +2260,6 @@ func (i *Interactive) dialogOwnsInput() bool {
 		i.jumpDialog.Active() ||
 		i.btwDialog.Active() ||
 		i.skillsDialog.Active() ||
-		i.changelogDialog.Active() ||
 		i.logoutDialog.Active() ||
 		i.telegramDialog.Active() ||
 		i.settingsDialog.Active() ||
@@ -2647,17 +2644,6 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 		i.invalidate()
 		return false
 	}
-	if i.changelogDialog.Active() {
-		if closed := i.changelogDialog.HandleKey(k); closed {
-			// User dismissed; let the parent persist the
-			// LastChangelogShown marker via the close callback.
-			if i.cfg.OnChangelogDismiss != nil {
-				i.cfg.OnChangelogDismiss()
-			}
-		}
-		i.invalidate()
-		return false
-	}
 
 	// Configured shortcuts only apply to the main input. Every dialog
 	// above has already consumed its keys, and the confirmation prompt
@@ -2969,7 +2955,7 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if k.Kind == tui.KeyEsc {
 		i.clipboardImages = nil
 	}
-	if submit := i.ed.HandleKey(k); submit {
+	if submit := i.handleEditorKey(k); submit {
 		// SubmitValue() expands any [pasted text #N +L lines]
 		// placeholders back into their bodies; the raw Value()
 		// is only what the user sees on screen.
@@ -3094,7 +3080,7 @@ func (i *Interactive) pasteClipboard() {
 		return
 	}
 	if pastedText {
-		i.ed.HandleKey(key)
+		i.handleEditorKey(key)
 		i.statusErr = ""
 		i.statusOK = ""
 		return
@@ -3271,6 +3257,10 @@ func (i *Interactive) applyExtensionCommandResponse(name string, resp extproto.C
 // chat. Levels: "info" (muted), "warn" (warning), "error" (error),
 // "success" (tool/ok green).
 func (i *Interactive) appendExtensionNote(extName, msg, level string) {
+	i.appendNote(extName, msg, level, false)
+}
+
+func (i *Interactive) appendNote(extName, msg, level string, startup bool) {
 	if msg == "" {
 		return
 	}
@@ -3286,15 +3276,24 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 		color = i.cfg.Theme.Tool
 	}
 	prefix := i.cfg.Theme.FG256(i.cfg.Theme.Accent, "["+extName+"] ")
-	for _, line := range strings.Split(msg, "\n") {
+	if !startup {
 		i.statusOK = "" // clear any stale ok
 		i.statusErr = ""
-		i.extNotes = append(i.extNotes, prefix+i.cfg.Theme.FG256(color, line))
+	}
+	for _, line := range strings.Split(msg, "\n") {
+		note := prefix + i.cfg.Theme.FG256(color, line)
+		if startup {
+			i.startupNotes = append(i.startupNotes, note)
+		} else {
+			i.extNotes = append(i.extNotes, note)
+		}
 	}
 	// Extension slash commands complete asynchronously. If their result is
 	// displayed while confirmation is waiting, keep Esc assigned to the note
 	// until it is dismissed rather than letting it answer the tool call.
-	i.confirmDialog.Blur()
+	if !startup {
+		i.confirmDialog.Blur()
+	}
 }
 
 // HostHooks implementation for the extension manager. The manager
@@ -3303,33 +3302,39 @@ func (i *Interactive) appendExtensionNote(extName, msg, level string) {
 
 // Notify is the manager's NotifyFromExt entry point.
 func (i *Interactive) Notify(extName, level, message string) {
-	i.appendExtensionNote(extName, message, level)
+	i.mu.Lock()
+	startup := !i.startupComplete
+	i.mu.Unlock()
+	i.appendNote(extName, message, level, startup)
+	i.invalidate()
+}
+
+// NotifyStartup places a startup notification above the conversation even
+// when asynchronous initialization finishes after the user starts chatting.
+func (i *Interactive) NotifyStartup(extName, level, message string) {
+	i.appendNote(extName, message, level, true)
 	i.invalidate()
 }
 
 // ClearNotes removes every note line owned by extName from the
-// bottom-sticky ext-notes block. Extensions use this to retract a
+// startup and runtime notes blocks. Extensions use this to retract a
 // transient status line (e.g. an approval prompt) once it no longer
 // applies, instead of leaving it stacked forever. Notes from other
 // extensions and internal notes (auto-compact) are left untouched.
 func (i *Interactive) ClearNotes(extName string) {
 	marker := "[" + extName + "] "
 	i.mu.Lock()
-	if len(i.extNotes) == 0 {
-		i.mu.Unlock()
-		return
-	}
-	kept := i.extNotes[:0:0]
 	changed := false
-	for _, line := range i.extNotes {
-		if strings.Contains(line, marker) {
-			changed = true
-			continue
+	for _, notes := range []*[]string{&i.extNotes, &i.startupNotes} {
+		kept := (*notes)[:0:0]
+		for _, line := range *notes {
+			if strings.Contains(line, marker) {
+				changed = true
+				continue
+			}
+			kept = append(kept, line)
 		}
-		kept = append(kept, line)
-	}
-	if changed {
-		i.extNotes = kept
+		*notes = kept
 	}
 	i.mu.Unlock()
 	if changed {
@@ -3488,10 +3493,9 @@ func (i *Interactive) SubmitOrQueue(text string, images []provider.ImageBlock) {
 // currently shown (or last shown). Used by the dismiss callback
 // to store the correct version for dev builds.
 func (i *Interactive) ChangelogVersion() string {
-	if i.changelogDialog != nil {
-		return i.changelogDialog.version
-	}
-	return ""
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.startupChangelog.Version
 }
 
 func (i *Interactive) CancelTurn() {
@@ -3858,6 +3862,7 @@ func (i *Interactive) openSettingsDialog() {
 				i.chatTimestampDateSetting(),
 			},
 		},
+		i.reasoningPreviewSetting(),
 		{
 			key:   "show_instructions_at_startup",
 			label: "show loaded resources at startup",
@@ -4137,6 +4142,10 @@ func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
 }
 
 func (i *Interactive) applySettingToggle(key string, value bool) {
+	if key == "show_reasoning" {
+		i.applyShowReasoning(value)
+		return
+	}
 	if key == "tui_click_to_position" {
 		i.applyClickToPosition(value)
 		return
@@ -4810,6 +4819,7 @@ func longestCommonPrefix(ss []string) string {
 }
 
 func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
+	i.finishStartup()
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return false
@@ -4897,6 +4907,7 @@ func (i *Interactive) runSlash(ctx context.Context, cmd string) (done bool) {
 		i.parkedTotal = 0
 		i.scrollOffset = 0
 		i.extNotes = nil
+		i.startupNotes = nil
 		i.reloadErrors = nil
 		i.view.InvalidateRenderCache()
 		i.mu.Unlock()
@@ -6156,6 +6167,7 @@ func ShellEscapeCommand(text string) (string, bool) {
 // in flight. Its terminal-log output is appended to the transcript as
 // user context without automatically starting a model turn.
 func (i *Interactive) startShellEscape(parent context.Context, cmd string) {
+	i.finishStartup()
 	i.mu.Lock()
 	if i.busy || i.shellRunning {
 		i.statusErr = "busy — wait for the current turn to finish before running a shell command"
@@ -6279,6 +6291,7 @@ func (i *Interactive) startTurnRequest(parent context.Context, prompt string, im
 }
 
 func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt string, images []provider.ImageBlock, overflowRecoveryAttempted bool, tool *toolPromptRequest) {
+	i.finishStartup()
 	if i.rejectAttachedImagePrompt(images) {
 		return
 	}
@@ -6305,6 +6318,7 @@ func (i *Interactive) startTurnRequestWithPrelude(parent context.Context, prompt
 	// The condense flow re-fires the user's queued prompt for us, so
 	// we just hand it off and exit.
 	i.mu.Lock()
+	i.agent.SetStreamReasoning(i.cfg.ShowReasoning)
 	needsPreCompact := !overflowRecoveryAttempted && !i.autoCompacting && i.shouldAutoCompactLocked()
 	if needsPreCompact {
 		i.pendingCompactPrompt = prompt
@@ -6655,6 +6669,7 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 	defer i.mu.Unlock()
 	switch e := ev.(type) {
 	case core.EvAssistantStart:
+		i.reasoning.Reset()
 		// Fires at the top of every oneTurn, including follow-up
 		// turns after tool use. Without this, the streaming buffer
 		// is still marked off from the previous assistant message
@@ -6675,6 +6690,16 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 		i.toolCalls = map[string]*tui.ToolCallView{}
 		i.toolOrder = nil
 		i.toolGate = map[string]int{}
+	case core.EvError:
+		i.reasoning.Reset()
+	case core.EvDone:
+		if !i.streamFlushPending {
+			i.reasoning.Reset()
+		}
+	case core.EvReasoningDelta:
+		if i.cfg.ShowReasoning {
+			i.reasoning.Append(e.Delta)
+		}
 	case core.EvTextDelta:
 		// Buffer into streamPending; the paintPace ticker drains
 		// it into i.streaming a few runes at a time for a smooth
@@ -6784,6 +6809,9 @@ func (i *Interactive) handleEvent(ev core.AgentEvent) {
 			i.lastCtxInput = e.Usage.InputTokens + e.Usage.CacheReadTokens + e.Usage.CacheWriteTokens
 		}
 	case core.EvTurnEnd:
+		if !i.streamFlushPending {
+			i.reasoning.Reset()
+		}
 		if e.Stop == provider.StopAborted {
 			i.resetStreamingStateLocked()
 			i.statusErr = ""
@@ -7813,6 +7841,7 @@ func assistantText(m provider.Message) string {
 // queue drain) so the pacer doesn't keep draining stale runes from
 // a prior turn. Must be called with i.mu held.
 func (i *Interactive) resetStreamingStateLocked() {
+	i.reasoning.Reset()
 	i.streaming.Reset()
 	i.streamPending = i.streamPending[:0]
 	i.streamFlushPending = false
@@ -7936,6 +7965,7 @@ func (i *Interactive) runStreamPacer(ctx context.Context) {
 				// and hides the streaming overlay.
 				if i.streamFlushPending {
 					i.streamFlushPending = false
+					i.reasoning.Reset()
 					i.streaming.Reset()
 					i.streamOn = false
 					i.openAllToolGatesLocked()

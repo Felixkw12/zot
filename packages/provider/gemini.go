@@ -303,8 +303,8 @@ func convertGemAssistantParts(blocks []Content, functionsEnabled bool) []gemPart
 	for _, b := range blocks {
 		switch v := b.(type) {
 		case ReasoningBlock:
-			// MiniMax signatures cannot be replayed as Gemini thought signatures.
-			if v.ID == miniMaxThinkingID {
+			// Foreign protocol signatures cannot be replayed as Gemini thoughts.
+			if v.ID == miniMaxThinkingID || v.ID == bedrockReasoningID || v.ID == bedrockRedactedReasoningID {
 				continue
 			}
 			if v.Encrypted != "" || v.Summary != "" {
@@ -736,6 +736,9 @@ func (c *geminiClient) runStream(ctx context.Context, resp *http.Response, req R
 					}
 					if part.Thought {
 						appendPartText("reasoning", part.Text, part.ThoughtSignature)
+						if part.Text != "" {
+							out <- EventReasoningDelta{Delta: part.Text}
+						}
 						currentText = nil
 						continue
 					}
