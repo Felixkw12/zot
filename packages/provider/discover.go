@@ -232,6 +232,8 @@ const (
 	gondolaDefaultBaseURL    = "https://api.gondola-ai.com/v1"
 	yoloAutoDefaultBaseURL   = "https://yolo-auto.com/v1"
 
+	cheaperInferenceDefaultBaseURL = "https://api.cheaperinference.com/v1"
+
 	// Yolo-Auto's documented conservative client limits. The provider is
 	// flat-rate with plan-bounded windows, so the window is a safe floor
 	// rather than a ceiling; /v1/models reports the per-key window and

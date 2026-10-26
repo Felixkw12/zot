@@ -190,6 +190,7 @@ show instructions and should be configured with environment variables.
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
 | Gondola | `GONDOLA_API_KEY` | `gondola` |
 | Yolo-Auto | `YOLO_AUTO_API_KEY` | `yolo-auto` |
+| Cheaper Inference | `CHEAPER_INFERENCE_API_KEY` | `cheaperinference` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
