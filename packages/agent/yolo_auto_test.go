@@ -30,6 +30,7 @@ func TestYoloAutoDefaultAvailableOffline(t *testing.T) {
 func TestYoloAutoRefreshIgnoresSharedCache(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("CHEAPER_INFERENCE_API_KEY", "")
 	t.Setenv("YOLO_AUTO_API_KEY", "test-pro")
 	cachedAt := time.Now().UTC()
 	if err := provider.SaveCache(ModelCachePath(), provider.ModelCache{

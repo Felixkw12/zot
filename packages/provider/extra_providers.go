@@ -128,6 +128,12 @@ func NewYoloAuto(apiKey, baseURL string) Client {
 	return NewOpenAICompat("yolo-auto", apiKey, baseURL, yoloAutoDefaultBaseURL)
 }
 
+// NewCheaperInference: Cheaper Inference, an OpenAI Chat Completions-compatible
+// LLM gateway. One key reaches models from several labs.
+func NewCheaperInference(apiKey, baseURL string) Client {
+	return NewOpenAICompat("cheaperinference", apiKey, baseURL, cheaperInferenceDefaultBaseURL)
+}
+
 // NewOpenCode routes Zen models through Chat Completions or Responses.
 func NewOpenCode(apiKey, baseURL string) Client {
 	const defaultBaseURL = "https://opencode.ai/zen/v1"

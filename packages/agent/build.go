@@ -208,6 +208,8 @@ func defaultModelForProvider(prov string) string {
 		return "kimi-k3"
 	case "yolo-auto":
 		return "qwen3.8-flash"
+	case "cheaperinference":
+		return "gpt-5.4-mini"
 	case "mistral":
 		return "mistral-large-latest"
 	case "zai":
@@ -249,7 +251,7 @@ func defaultModelForProvider(prov string) string {
 var knownProviders = []string{
 	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID, provider.LMStudioProviderID,
 	"moonshotai", "moonshotai-cn",
-	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto",
+	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference",
 	"mistral", "zai",
 	"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 	"minimax", "minimax-cn",
@@ -501,6 +503,16 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		if provName == provider.LMStudioProviderID {
 			resolvedModel.ContextWindow = 32768
 			resolvedModel.MaxOutput = 4096
+		}
+		err = nil
+	}
+	// Cheaper Inference uses plain model IDs across multiple labs. Preserve
+	// explicit selections before asynchronous discovery completes, rather than
+	// substituting the seed model. The server validates unknown IDs.
+	if err != nil && provName == "cheaperinference" {
+		resolvedModel = provider.Model{
+			Provider: provName, ID: model, DisplayName: model,
+			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
 		}
 		err = nil
 	}
@@ -983,6 +995,8 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewGondola(r.Credential, r.BaseURL))
 	case "yolo-auto":
 		return wrap(provider.NewYoloAuto(r.Credential, r.BaseURL))
+	case "cheaperinference":
+		return wrap(provider.NewCheaperInference(r.Credential, r.BaseURL))
 	case "zai":
 		return wrap(provider.NewZAI(r.Credential, r.BaseURL))
 	case "xiaomi":
@@ -1316,6 +1330,8 @@ func envVarName(provider string) string {
 		return "GONDOLA"
 	case "yolo-auto":
 		return "YOLO_AUTO"
+	case "cheaperinference":
+		return "CHEAPER_INFERENCE"
 	case "mistral":
 		return "MISTRAL"
 	case "zai":

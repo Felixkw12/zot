@@ -105,11 +105,12 @@ func ValidateAndRepairConfig() {
 			// Gateway providers can serve routed model ids like
 			// "deepseek/deepseek-v4-flash" even when the local catalog does not
 			// know them. Preserve only routed ids; plain typos are still repaired.
-			if cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || (isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model)) {
+			if cfg.Provider == "cheaperinference" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || (isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model)) {
 				// Local discovery is transient. Preserve the selected LM Studio
 				// or discovery-enabled custom provider ID even if another
 				// provider has an identically named model. Routed gateway IDs
-				// are also valid without a catalog entry.
+				// are also valid without a catalog entry. Cheaper Inference uses
+				// plain IDs, which must survive startup before discovery finishes.
 			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -215,6 +216,15 @@ func refreshModels() {
 	}
 	yoloCancel()
 
+	// The catalog is key-filtered. Refresh independently of the shared cache
+	// so a fresh cache cannot hide models after login or a credential change.
+	cheaperCtx, cheaperCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	var cheaperModels []provider.Model
+	if cred, _, err := resolveCredentialForBackground(cheaperCtx, "cheaperinference"); err == nil {
+		cheaperModels, _ = provider.DiscoverCheaperInference(cheaperCtx, cred, "")
+	}
+	cheaperCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var all []provider.Model
@@ -288,6 +298,7 @@ func refreshModels() {
 
 	// Do not carry forward another key's models or limits, even on failure.
 	all = mergeYoloAutoModels(all, yoloModels)
+	all = mergeCheaperInferenceModels(all, cheaperModels)
 	provider.SetLiveModels(all)
 	// Keep explicit metadata overrides above refreshed server catalogs.
 	LoadUserModels()
@@ -308,6 +319,18 @@ func mergeYoloAutoModels(existing, live []provider.Model) []provider.Model {
 	out := make([]provider.Model, 0, len(existing)+len(live))
 	for _, model := range existing {
 		if model.Provider != "yolo-auto" {
+			out = append(out, model)
+		}
+	}
+	return append(out, live...)
+}
+
+// mergeCheaperInferenceModels drops cached account entries even on discovery
+// failure or logout. The static seed remains available as an offline fallback.
+func mergeCheaperInferenceModels(existing, live []provider.Model) []provider.Model {
+	out := make([]provider.Model, 0, len(existing)+len(live))
+	for _, model := range existing {
+		if model.Provider != "cheaperinference" {
 			out = append(out, model)
 		}
 	}
