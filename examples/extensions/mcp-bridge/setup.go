@@ -94,6 +94,16 @@ func setupTemplates() map[string]serverTemplate {
 				}
 			},
 		},
+		"deedpage": {
+			Name:        "deedpage",
+			Description: "Publish HTML or a small static site to a permanent public https://<slug>.deed.page/ URL via the keyless deed.page MCP server, then update, list, roll back, or delete it.",
+			Config: func(cwd string) ServerConfig {
+				return ServerConfig{
+					Transport: "streamable-http",
+					URL:       "https://deed.page/mcp",
+				}
+			},
+		},
 	}
 }
 
