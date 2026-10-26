@@ -506,6 +506,16 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}
 		err = nil
 	}
+	// Cheaper Inference uses plain model IDs across multiple labs. Preserve
+	// explicit selections before asynchronous discovery completes, rather than
+	// substituting the seed model. The server validates unknown IDs.
+	if err != nil && provName == "cheaperinference" {
+		resolvedModel = provider.Model{
+			Provider: provName, ID: model, DisplayName: model,
+			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
+		}
+		err = nil
+	}
 	// Custom providers are open-catalogue like ollama: any model id the
 	// endpoint understands is valid. Use the provider-level base URL.
 	if err != nil {

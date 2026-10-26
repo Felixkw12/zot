@@ -261,6 +261,26 @@ export OPENROUTER_API_KEY=...
 zot --provider openrouter
 ```
 
+## Cheaper Inference
+
+Use `CHEAPER_INFERENCE_API_KEY` or `/login` with provider `cheaperinference`.
+The offline default is `gpt-5.4-mini`. At startup, authenticated discovery
+adds the key's streaming Chat Completions models to `/model`, including
+published context/output limits, reasoning, vision, and token prices. Media,
+non-streaming, and Responses-only models are excluded from discovery.
+
+Discovery refreshes even when the shared catalog cache is fresh. Failed
+refreshes or logout remove previously discovered account entries, leaving the
+offline default and explicit `models.json` overrides available. Command-backed
+keys are not executed for background discovery.
+
+Explicit and saved model IDs are preserved before discovery finishes, including
+plain IDs such as `claude-fable-5`. Unknown IDs are validated by the gateway
+rather than replaced with another model. Without catalog metadata, requests
+use a conservative 4,096-token output limit. Use `models.json` to supply context
+limits and capabilities when discovery is unavailable. Cached token prices are
+estimates, not a quote for the route that ultimately serves a request.
+
 ## Local LM Studio server
 
 Register the `lmstudio` provider through `/login`, choose `api key`, and select
