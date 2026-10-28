@@ -943,7 +943,7 @@ func runInteractive(ctx context.Context, args Args, version string) error {
 			}
 			if confirmGate != nil {
 				var content strings.Builder
-				if tool, err := a.Tools.Get(call.Name); err == nil {
+				if tool, err := a.ToolRegistry().Get(call.Name); err == nil {
 					if previewer, ok := tool.(core.ToolPreviewer); ok {
 						preview, err := previewer.Preview(ctx, effectiveArgs)
 						if err != nil {

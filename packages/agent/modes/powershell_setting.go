@@ -20,7 +20,7 @@ func (i *Interactive) powerShellSettingHint() string {
 		return "controlled for this run by --tools"
 	}
 	if i.agent != nil {
-		if tool := i.agent.Tools["powershell"]; tool != nil {
+		if tool := i.agent.ToolRegistry()["powershell"]; tool != nil {
 			if _, builtin := tool.(*tools.PowerShellTool); !builtin {
 				return "controlled by a custom tool"
 			}
@@ -36,7 +36,7 @@ func (i *Interactive) appendPowerShellSetting(items []settingsItem, goos string)
 	hint := i.powerShellSettingHint()
 	value := i.cfg.PowerShellEnabled != nil && *i.cfg.PowerShellEnabled
 	if hint != "" && i.agent != nil {
-		value = i.agent.Tools["powershell"] != nil
+		value = i.agent.ToolRegistry()["powershell"] != nil
 	}
 	return append(items, settingsItem{
 		key: "powershell_enabled", label: "PowerShell tool",
@@ -79,16 +79,13 @@ func (i *Interactive) applyPowerShellSetting(value bool, goos string) {
 
 	i.cfg.PowerShellEnabled = &value
 	if i.agent != nil {
-		next := core.Registry{}
-		for name, tool := range i.agent.Tools {
-			if name != "powershell" {
-				next[name] = tool
+		i.agent.UpdateTools(func(next core.Registry) core.Registry {
+			delete(next, "powershell")
+			if value {
+				next["powershell"] = &tools.PowerShellTool{CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox}
 			}
-		}
-		if value {
-			next["powershell"] = &tools.PowerShellTool{CWD: i.cfg.CWD, Sandbox: i.cfg.Sandbox}
-		}
-		i.agent.SetTools(next)
+			return next
+		})
 	}
 	i.mu.Lock()
 	i.statusOK = "PowerShell tool " + onOff(value)

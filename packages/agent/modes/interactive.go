@@ -7332,46 +7332,40 @@ func (i *Interactive) applyOpenRouterServerTools(active bool) {
 	if i.agent == nil {
 		return
 	}
-	current := i.agent.Tools
-	next := core.Registry{}
-	for name, t := range current {
-		if tools.IsOpenRouterServerTool(name) {
-			continue
+	i.agent.UpdateTools(func(next core.Registry) core.Registry {
+		for name := range next {
+			if tools.IsOpenRouterServerTool(name) {
+				delete(next, name)
+			}
 		}
-		next[name] = t
-	}
-	i.agent.MaxToolCalls = 0
-	if active && !i.cfg.NoTools && i.cfg.Provider == "openrouter" && !strings.Contains(strings.ToLower(i.cfg.Model), "@preset/") {
-		for _, t := range tools.OpenRouterServerTools() {
-			next[t.Name()] = t
+		i.agent.MaxToolCalls = 0
+		if active && !i.cfg.NoTools && i.cfg.Provider == "openrouter" && !strings.Contains(strings.ToLower(i.cfg.Model), "@preset/") {
+			for _, t := range tools.OpenRouterServerTools() {
+				next[t.Name()] = t
+			}
+			i.agent.MaxToolCalls = tools.ResolveToolCallLimit(i.cfg.OpenRouterServerToolCallLimit)
 		}
-		i.agent.MaxToolCalls = tools.ResolveToolCallLimit(i.cfg.OpenRouterServerToolCallLimit)
-	}
-	i.agent.SetTools(next)
+		return next
+	})
 }
 
 func (i *Interactive) applyAutoSwarmTool(active bool) {
 	if i.agent == nil {
 		return
 	}
-	current := i.agent.Tools
-	next := core.Registry{}
-	for name, t := range current {
-		if name == "swarm_spawn" {
-			continue
+	i.agent.UpdateTools(func(next core.Registry) core.Registry {
+		delete(next, "swarm_spawn")
+		if active && i.cfg.Swarm != nil {
+			next["swarm_spawn"] = &tools.SwarmSpawnTool{
+				Swarm:           i.cfg.Swarm,
+				Enabled:         func() bool { return true },
+				DefaultModel:    func() string { return i.cfg.Model },
+				DefaultProvider: func() string { return i.cfg.Provider },
+				OnSpawned:       i.trackSwarmAgent,
+			}
 		}
-		next[name] = t
-	}
-	if active && i.cfg.Swarm != nil {
-		next["swarm_spawn"] = &tools.SwarmSpawnTool{
-			Swarm:           i.cfg.Swarm,
-			Enabled:         func() bool { return true },
-			DefaultModel:    func() string { return i.cfg.Model },
-			DefaultProvider: func() string { return i.cfg.Provider },
-			OnSpawned:       i.trackSwarmAgent,
-		}
-	}
-	i.agent.SetTools(next)
+		return next
+	})
 }
 
 // applyTelegramTools registers (active=true) or removes (active=false)

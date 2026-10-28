@@ -55,6 +55,9 @@ type tokenStore struct {
 	// refreshLocks serialize complete refreshes per credential, not just
 	// individual file reads and writes. They are shared across connections.
 	refreshLocks map[string]chan struct{}
+	// generations invalidate connections and pending sign-ins on logout.
+	// Checked under mu with each credential read or write.
+	generations map[string]uint64
 }
 
 func newTokenStore(home string) *tokenStore {
@@ -102,6 +105,10 @@ func (s *tokenStore) load(key string) (storedCredentials, bool, error) {
 func (s *tokenStore) update(key string, change func(*storedCredentials, bool)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.updateLocked(key, change)
+}
+
+func (s *tokenStore) updateLocked(key string, change func(*storedCredentials, bool)) error {
 	file, err := s.read()
 	if err != nil {
 		return err
@@ -145,10 +152,33 @@ func (s *tokenStore) refreshLock(key string) chan struct{} {
 // Refresh here so the SDK never reads an expired token and independently
 // replays its refresh token on concurrent tool, resource, or listener calls.
 type serverTokens struct {
-	store   *tokenStore
-	key     string
-	url     string
-	refresh func(context.Context, string) (*transport.Token, error)
+	store      *tokenStore
+	key        string
+	url        string
+	refresh    func(context.Context, string) (*transport.Token, error)
+	generation uint64
+}
+
+// update rejects saves from a connection or sign-in that predates logout.
+// It must not acquire the refresh gate: refresh saves already hold it.
+func (t *serverTokens) update(change func(*storedCredentials, bool)) error {
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	if t.generation != t.store.generations[t.key] {
+		return transport.ErrOAuthAuthorizationRequired
+	}
+	return t.store.updateLocked(t.key, change)
+}
+
+func (t *serverTokens) load() (storedCredentials, bool, error) {
+	t.store.mu.Lock()
+	defer t.store.mu.Unlock()
+	if t.generation != t.store.generations[t.key] {
+		return storedCredentials{}, false, transport.ErrOAuthAuthorizationRequired
+	}
+	file, err := t.store.read()
+	entry, ok := file.Servers[t.key]
+	return entry, ok, err
 }
 
 func (t *serverTokens) GetToken(ctx context.Context) (*transport.Token, error) {
@@ -162,7 +192,7 @@ func (t *serverTokens) GetToken(ctx context.Context) (*transport.Token, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	entry, ok, err := t.store.load(t.key)
+	entry, ok, err := t.load()
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +220,7 @@ func (t *serverTokens) SaveToken(ctx context.Context, token *transport.Token) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return t.store.update(t.key, func(entry *storedCredentials, _ bool) {
+	return t.update(func(entry *storedCredentials, _ bool) {
 		entry.URL, entry.Token = t.url, token
 	})
 }
@@ -242,7 +272,9 @@ func redirectURI(port int) string {
 // client ID comes from the configuration or from an earlier registration.
 func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect string) (transport.OAuthConfig, error) {
 	key := credentialKey(name, cfg.URL)
-	tokens := &serverTokens{store: m.tokens, key: key, url: cfg.URL}
+	m.tokens.mu.Lock()
+	tokens := &serverTokens{store: m.tokens, key: key, url: cfg.URL, generation: m.tokens.generations[key]}
+	m.tokens.mu.Unlock()
 	out := transport.OAuthConfig{
 		RedirectURI: redirect,
 		TokenStore:  tokens,
@@ -253,7 +285,7 @@ func (m *Manager) oauthTransportConfig(name string, cfg ServerConfig, redirect s
 		out.Scopes = cfg.OAuth.Scopes
 		out.AuthServerMetadataURL = cfg.OAuth.AuthServerMetadataURL
 	}
-	entry, ok, err := m.tokens.load(key)
+	entry, ok, err := tokens.load()
 	if err != nil {
 		return out, err
 	}
@@ -381,7 +413,7 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 			listener.Close()
 			return fmt.Errorf("client registration failed, configure oauth.clientId: %w", describeOAuthError(err))
 		}
-		if err := m.tokens.update(key, func(entry *storedCredentials, _ bool) {
+		if err := options.TokenStore.(*serverTokens).update(func(entry *storedCredentials, _ bool) {
 			entry.URL, entry.ClientID, entry.ClientSecret, entry.RedirectURI = cfg.URL, handler.GetClientID(), handler.GetClientSecret(), redirect
 		}); err != nil {
 			listener.Close()
@@ -475,7 +507,7 @@ func (m *Manager) SignIn(ctx context.Context, name string, progress func(SignInS
 	if err := handler.ProcessAuthorizationResponse(ctx, result.code, state, verifier); err != nil {
 		return fmt.Errorf("token exchange failed: %w", describeOAuthError(err))
 	}
-	return m.tokens.update(key, func(entry *storedCredentials, _ bool) {
+	return options.TokenStore.(*serverTokens).update(func(entry *storedCredentials, _ bool) {
 		entry.ResourceMetadataURL = options.ProtectedResourceMetadataURL
 	})
 }
@@ -566,7 +598,16 @@ func (m *Manager) SignOut(name string) error {
 	if s == nil {
 		return fmt.Errorf("server %q is not configured", name)
 	}
-	return m.tokens.update(credentialKey(name, s.cfg.URL), func(entry *storedCredentials, _ bool) {
+	key := credentialKey(name, s.cfg.URL)
+	m.tokens.mu.Lock()
+	defer m.tokens.mu.Unlock()
+	if m.tokens.generations == nil {
+		m.tokens.generations = map[string]uint64{}
+	}
+	// Invalidate first, even if deleting the file entry fails. Pending
+	// network operations must not restore credentials after logout.
+	m.tokens.generations[key]++
+	return m.tokens.updateLocked(key, func(entry *storedCredentials, _ bool) {
 		*entry = storedCredentials{}
 	})
 }

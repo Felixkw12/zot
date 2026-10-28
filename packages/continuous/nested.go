@@ -70,10 +70,7 @@ func (x *NativeExecutor) wireNestedExecution(agent *core.Agent, conversationID s
 		if err != nil {
 			return blockedNested("nested tool call refused: " + err.Error())
 		}
-		tools := core.Registry{}
-		for name, tool := range agent.Tools {
-			tools[name] = tool
-		}
+		tools := agent.ToolRegistry()
 		if operation != nil {
 			tools[operation.Name()] = operation
 		}

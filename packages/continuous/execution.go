@@ -292,13 +292,14 @@ func prepareAgent(ctx context.Context, engine Engine, snap storage.Snapshot, c C
 	// Per-conversation tool selection: narrow the host registry to what the
 	// configuration permits. It can only remove tools, never add.
 	if len(c.Config.Tools) > 0 || len(c.Config.DenyTools) > 0 {
-		narrowed := core.Registry{}
-		for name, tool := range agent.Tools {
-			if c.Config.allows(name) {
-				narrowed[name] = tool
+		agent.UpdateTools(func(current core.Registry) core.Registry {
+			for name := range current {
+				if !c.Config.allows(name) {
+					delete(current, name)
+				}
 			}
-		}
-		agent.SetTools(narrowed)
+			return current
+		})
 	}
 	if c.Config.Model != "" {
 		agent.Model = c.Config.Model
@@ -366,7 +367,7 @@ func recoverCall(ctx context.Context, r *Runtime, agent *core.Agent, identity To
 	if intent.Replay == core.ReplayNever || intent.Replay == "" {
 		return fmt.Sprintf("tool %s interrupted, effect unknown, not replayed (policy never)", call.ID), none, false
 	}
-	tool, err := agent.Tools.Get(call.Name)
+	tool, err := agent.ToolRegistry().Get(call.Name)
 	if err != nil {
 		return fmt.Sprintf("tool %s interrupted, not replayed: tool no longer registered", call.ID), none, false
 	}
@@ -469,7 +470,7 @@ func authorizeCall(ctx context.Context, r *Runtime, agent *core.Agent, conversat
 	call, args = rewritten, rewritten.Arguments
 	if tool == nil {
 		var err error
-		tool, err = agent.Tools.Get(call.Name)
+		tool, err = agent.ToolRegistry().Get(call.Name)
 		if err != nil {
 			return args, false, err.Error(), core.ReplayNever
 		}

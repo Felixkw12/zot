@@ -213,10 +213,7 @@ func (exts resolvedExtensions) apply(agent *core.Agent) error {
 	if len(exts) == 0 {
 		return nil
 	}
-	tools := core.Registry{}
-	for name, tool := range agent.Tools {
-		tools[name] = tool
-	}
+	tools := agent.ToolRegistry()
 	var sections []string
 	for _, ext := range exts {
 		for _, tool := range ext.Tools {

@@ -309,7 +309,7 @@ func (d *btwDialog) submit(invalidate func()) {
 }
 
 func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
-	agent := core.NewAgent(main.Client, model, system, main.Tools)
+	agent := core.NewAgent(main.Client, model, system, main.ToolRegistry())
 	agent.MaxSteps = main.MaxSteps
 	agent.Reasoning = main.Reasoning
 	agent.Temperature = main.Temperature
@@ -317,6 +317,7 @@ func newBtwAgent(main *core.Agent, system, model string) *core.Agent {
 	agent.BeforeToolExecute = main.BeforeToolExecute
 	agent.BeforeToolExecuteContext = main.BeforeToolExecuteContext
 	agent.BeforeTurn = main.BeforeTurn
+	agent.BeforeTurnContext = main.BeforeTurnContext
 	agent.BeforeAssistantMessage = main.BeforeAssistantMessage
 	agent.MaxRetries = main.MaxRetries
 	agent.RetryBaseDelay = main.RetryBaseDelay
