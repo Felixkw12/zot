@@ -105,12 +105,13 @@ func ValidateAndRepairConfig() {
 			// Gateway providers can serve routed model ids like
 			// "deepseek/deepseek-v4-flash" even when the local catalog does not
 			// know them. Preserve only routed ids; plain typos are still repaired.
-			if cfg.Provider == "cheaperinference" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || (isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model)) {
+			if cfg.Provider == "cheaperinference" || cfg.Provider == "opper" || cfg.Provider == provider.LMStudioProviderID || isDiscoverableCustomProvider(cfg.Provider) || (isGatewayProvider(cfg.Provider) && isGatewayRoutedModelID(cfg.Model)) {
 				// Local discovery is transient. Preserve the selected LM Studio
 				// or discovery-enabled custom provider ID even if another
 				// provider has an identically named model. Routed gateway IDs
-				// are also valid without a catalog entry. Cheaper Inference uses
-				// plain IDs, which must survive startup before discovery finishes.
+				// are also valid without a catalog entry. Cheaper Inference and
+				// Opper use plain IDs, which must survive startup before
+				// discovery finishes.
 			} else if m, err := provider.FindModel("", cfg.Model); err == nil {
 				fix := defaultModelForProvider(cfg.Provider)
 				fmt.Fprintf(os.Stderr,
@@ -225,6 +226,15 @@ func refreshModels() {
 	}
 	cheaperCancel()
 
+	// Opper's list is scoped to the key's policy, so it also refreshes
+	// independently of the shared cache.
+	opperCtx, opperCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	var opperModels []provider.Model
+	if cred, _, err := resolveCredentialForBackground(opperCtx, "opper"); err == nil {
+		opperModels, _ = provider.DiscoverOpper(opperCtx, cred, "")
+	}
+	opperCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var all []provider.Model
@@ -299,6 +309,7 @@ func refreshModels() {
 	// Do not carry forward another key's models or limits, even on failure.
 	all = mergeYoloAutoModels(all, yoloModels)
 	all = mergeCheaperInferenceModels(all, cheaperModels)
+	all = mergeOpperModels(all, opperModels)
 	provider.SetLiveModels(all)
 	// Keep explicit metadata overrides above refreshed server catalogs.
 	LoadUserModels()
@@ -331,6 +342,18 @@ func mergeCheaperInferenceModels(existing, live []provider.Model) []provider.Mod
 	out := make([]provider.Model, 0, len(existing)+len(live))
 	for _, model := range existing {
 		if model.Provider != "cheaperinference" {
+			out = append(out, model)
+		}
+	}
+	return append(out, live...)
+}
+
+// mergeOpperModels drops cached Opper entries even on discovery failure or
+// logout. The static seed remains available as an offline fallback.
+func mergeOpperModels(existing, live []provider.Model) []provider.Model {
+	out := make([]provider.Model, 0, len(existing)+len(live))
+	for _, model := range existing {
+		if model.Provider != "opper" {
 			out = append(out, model)
 		}
 	}

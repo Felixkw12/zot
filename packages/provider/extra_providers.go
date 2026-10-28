@@ -134,6 +134,12 @@ func NewCheaperInference(apiKey, baseURL string) Client {
 	return NewOpenAICompat("cheaperinference", apiKey, baseURL, cheaperInferenceDefaultBaseURL)
 }
 
+// NewOpper: Opper, an EU-hosted, OpenAI Chat Completions-compatible LLM
+// gateway. One key reaches models from many providers.
+func NewOpper(apiKey, baseURL string) Client {
+	return NewOpenAICompat("opper", apiKey, baseURL, opperDefaultBaseURL)
+}
+
 // NewOpenCode routes Zen models through Chat Completions or Responses.
 func NewOpenCode(apiKey, baseURL string) Client {
 	const defaultBaseURL = "https://opencode.ai/zen/v1"

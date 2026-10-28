@@ -120,6 +120,12 @@ func probeAPIKey(ctx context.Context, provider, key string, c *http.Client) erro
 			return err
 		}
 		req.Header.Set("authorization", "Bearer "+key)
+	case "opper":
+		req, err = http.NewRequestWithContext(ctx, "GET", "https://api.opper.ai/v3/compat/models?view=recommended", nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("authorization", "Bearer "+key)
 	case "huggingface":
 		req, err = http.NewRequestWithContext(ctx, "GET", "https://router.huggingface.co/v1/models", nil)
 		if err != nil {

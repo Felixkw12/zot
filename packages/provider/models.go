@@ -313,6 +313,19 @@ var Catalog = []Model{
 		BaseURL: cheaperInferenceDefaultBaseURL,
 	},
 
+	// ---- Opper ----
+	// Seed entry only: claude-sonnet-4-6 is the default returned by
+	// defaultModelForProvider so it resolves offline. Opper is an EU-hosted,
+	// OpenAI-compatible LLM gateway, and the bare name is a pool across
+	// providers. Limits are the smallest and prices the most expensive pool
+	// member in https://api.opper.ai/v3/models (2026-10-28).
+	{
+		Provider: "opper", ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6 (Opper)",
+		ContextWindow: 1000000, MaxOutput: 64000,
+		PriceInput: 3.3, PriceOutput: 16.5, PriceCacheRead: 0.33, PriceCacheWrite: 4.125,
+		BaseURL: opperDefaultBaseURL,
+	},
+
 	// ---- Anthropic / newer families ----
 	{
 		Provider: "anthropic", ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5 (latest)",

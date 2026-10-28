@@ -500,6 +500,10 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		if v := os.Getenv("CHEAPER_INFERENCE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
+	case "opper":
+		if v := os.Getenv("OPPER_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
 	case "mistral":
 		if v := os.Getenv("MISTRAL_API_KEY"); v != "" {
 			return v, "apikey", "", nil

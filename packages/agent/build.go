@@ -210,6 +210,8 @@ func defaultModelForProvider(prov string) string {
 		return "qwen3.8-flash"
 	case "cheaperinference":
 		return "gpt-5.4-mini"
+	case "opper":
+		return "claude-sonnet-4-6"
 	case "mistral":
 		return "mistral-large-latest"
 	case "zai":
@@ -251,7 +253,7 @@ func defaultModelForProvider(prov string) string {
 var knownProviders = []string{
 	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID, provider.LMStudioProviderID,
 	"moonshotai", "moonshotai-cn",
-	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference",
+	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference", "opper",
 	"mistral", "zai",
 	"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 	"minimax", "minimax-cn",
@@ -510,6 +512,16 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 	// explicit selections before asynchronous discovery completes, rather than
 	// substituting the seed model. The server validates unknown IDs.
 	if err != nil && provName == "cheaperinference" {
+		resolvedModel = provider.Model{
+			Provider: provName, ID: model, DisplayName: model,
+			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
+		}
+		err = nil
+	}
+	// Opper takes bare pool names (claude-sonnet-4-6) and pinned
+	// provider/model IDs. Preserve explicit selections before asynchronous
+	// discovery completes; the gateway validates unknown IDs.
+	if err != nil && provName == "opper" {
 		resolvedModel = provider.Model{
 			Provider: provName, ID: model, DisplayName: model,
 			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
@@ -997,6 +1009,8 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewYoloAuto(r.Credential, r.BaseURL))
 	case "cheaperinference":
 		return wrap(provider.NewCheaperInference(r.Credential, r.BaseURL))
+	case "opper":
+		return wrap(provider.NewOpper(r.Credential, r.BaseURL))
 	case "zai":
 		return wrap(provider.NewZAI(r.Credential, r.BaseURL))
 	case "xiaomi":
@@ -1332,6 +1346,8 @@ func envVarName(provider string) string {
 		return "YOLO_AUTO"
 	case "cheaperinference":
 		return "CHEAPER_INFERENCE"
+	case "opper":
+		return "OPPER"
 	case "mistral":
 		return "MISTRAL"
 	case "zai":

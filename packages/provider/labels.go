@@ -45,6 +45,8 @@ func ProviderLabel(id string) string {
 		return "Yolo-Auto"
 	case "cheaperinference":
 		return "Cheaper Inference"
+	case "opper":
+		return "Opper"
 	case "mistral":
 		return "Mistral"
 	case "zai":

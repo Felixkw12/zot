@@ -191,6 +191,7 @@ show instructions and should be configured with environment variables.
 | Gondola | `GONDOLA_API_KEY` | `gondola` |
 | Yolo-Auto | `YOLO_AUTO_API_KEY` | `yolo-auto` |
 | Cheaper Inference | `CHEAPER_INFERENCE_API_KEY` | `cheaperinference` |
+| Opper | `OPPER_API_KEY` | `opper` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
@@ -280,6 +281,27 @@ rather than replaced with another model. Without catalog metadata, requests
 use a conservative 4,096-token output limit. Use `models.json` to supply context
 limits and capabilities when discovery is unavailable. Cached token prices are
 estimates, not a quote for the route that ultimately serves a request.
+
+## Opper
+
+Use `OPPER_API_KEY` or `/login` with provider `opper`. Opper is an EU-hosted,
+OpenAI-compatible gateway at `https://api.opper.ai/v3/compat`. The offline
+default is `claude-sonnet-4-6`. At startup, authenticated discovery adds the
+key's tool-capable chat models to `/model` from Opper's model list, including
+published context/output limits, vision, reasoning, and token prices.
+Embedding models and models without tool calling are excluded.
+
+Bare names such as `claude-sonnet-4-6` are pools: Opper picks a provider per
+request. A `provider/model` ID such as `anthropic/claude-sonnet-4-6` pins one
+route. A pool reports the smallest limits of its members and the most
+expensive member's prices, so cached prices are an upper bound, not a quote.
+
+Discovery refreshes even when the shared catalog cache is fresh. Failed
+refreshes or logout remove previously discovered entries, leaving the offline
+default and explicit `models.json` overrides available. Explicit and saved
+model IDs are preserved before discovery finishes and are validated by the
+gateway. Without catalog metadata, requests use a conservative 4,096-token
+output limit. Keys come from https://platform.opper.ai.
 
 ## Local LM Studio server
 

@@ -51,6 +51,7 @@ func TestCheaperInferenceRefreshWithFreshCache(t *testing.T) {
 	t.Setenv("CHEAPER_INFERENCE_API_KEY", "test-key")
 	t.Setenv("YOLO_AUTO_API_KEY", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("OPPER_API_KEY", "")
 	cachedAt := time.Now().UTC()
 	if err := provider.SaveCache(ModelCachePath(), provider.ModelCache{FetchedAt: cachedAt, Models: []provider.Model{
 		{Provider: "openai", ID: "unrelated-cached-model"},
