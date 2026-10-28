@@ -5,12 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
 // Sandbox guards tool access to the filesystem and shell. When Locked
-// is true (1), file tools refuse paths outside Root and bash runs with
-// a restricted environment.
+// is true (1), file tools refuse paths outside Root, except for additional
+// read-only roots, and bash runs with a restricted environment.
 //
 // The value is designed to be shared across tool instances (by pointer).
 // Enable/Disable are atomic so they can be toggled from the TUI.
@@ -18,6 +19,8 @@ type Sandbox struct {
 	Root        string
 	Permissions *PermissionSet
 	locked      atomic.Bool
+	readMu      sync.RWMutex
+	readRoots   []string
 }
 
 // NewSandbox returns a Sandbox rooted at cwd. It starts unlocked.
@@ -38,7 +41,34 @@ func (s *Sandbox) Locked() bool { return s != nil && s.locked.Load() }
 // CheckPath verifies that path resolves inside the sandbox root.
 // Returns an error describing the violation if not. No-op when unlocked.
 // Callers should pass an already-absolute path (use resolvePath() first).
-func (s *Sandbox) CheckPath(path string) (err error) {
+func (s *Sandbox) CheckPath(path string) error {
+	return s.checkPath(path, false)
+}
+
+// SetReadOnlyRoots replaces the extra jail roots available to read and glob.
+// Roots are pinned to their canonical locations so retargeting a symlink does
+// not grant access to a new directory. Invalid roots grant no access.
+func (s *Sandbox) SetReadOnlyRoots(roots []string) {
+	if s == nil {
+		return
+	}
+	var resolved []string
+	for _, root := range roots {
+		path, err := canonical(root)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err == nil && info.IsDir() {
+			resolved = append(resolved, path)
+		}
+	}
+	s.readMu.Lock()
+	s.readRoots = resolved
+	s.readMu.Unlock()
+}
+
+func (s *Sandbox) checkPath(path string, readOnly bool) (err error) {
 	defer markPolicyError(&err)
 	if !s.Locked() {
 		return nil
@@ -53,10 +83,19 @@ func (s *Sandbox) CheckPath(path string) (err error) {
 	if err != nil {
 		return fmt.Errorf("sandbox path: %w", err)
 	}
-	if !isUnder(rootAbs, target) {
-		return fmt.Errorf("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
+	if isUnder(rootAbs, target) {
+		return nil
 	}
-	return nil
+	if readOnly {
+		s.readMu.RLock()
+		defer s.readMu.RUnlock()
+		for _, root := range s.readRoots {
+			if isUnder(root, target) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("jailed: path %q is outside sandbox root %q (use /unjail to disable)", path, s.Root)
 }
 
 // DisplayPath returns the path the model should see in tool results

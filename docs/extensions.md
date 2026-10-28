@@ -98,9 +98,13 @@ zot scans two directories on startup, in this order:
 2. **Global**: `$ZOT_HOME/extensions/<name>/extension.json`
 
 A project-local extension with the same name wins over a global one.
-When `XDG_STATE_HOME` is set on any platform, `$ZOT_HOME` defaults to
-`$XDG_STATE_HOME/zot`. Otherwise it defaults to `~/Library/Application Support/zot/`
+`$ZOT_HOME` here means zot's resolved state directory. The `ZOT_HOME`
+environment variable is an optional override and may be unset or empty.
+Without that override, zot uses `$XDG_STATE_HOME/zot` when `XDG_STATE_HOME`
+is set on any platform. Otherwise it uses `~/Library/Application Support/zot/`
 on macOS, `~/.local/state/zot` on Linux, or `%LOCALAPPDATA%\zot` on Windows.
+zot does not export the resolved path to your shell. Before using `$ZOT_HOME`
+in shell commands, [set it to your existing state directory](../README.md#credential-lookup-order).
 
 Because each extension owns its own directory, the recommended place
 for extension state is inside that directory itself (for example
@@ -584,10 +588,25 @@ Closes a previously-open panel.
  "message":"refreshed cache (12 entries)"}
 ```
 
-`level` is one of `info`, `success`, `warn`, `error`. The note shows
-up below the transcript with the extension's name in brackets. Notes
-are one-shot: they clear automatically when the user sends their next
-prompt (and on `esc` / `/clear`).
+`level` is one of `info`, `success`, `warn`, `error`. In interactive mode,
+notifications received before the first prompt, slash command, or shell command
+appear below the welcome text, above the conversation. Later notifications
+remain below the transcript and clear on the next prompt, `esc`, or `/clear`.
+Command `display` responses always use the runtime notes area.
+
+For asynchronous initialization, explicitly mark startup notifications so they
+stay above the conversation even after the user starts chatting:
+
+```json
+{"type":"notify","level":"success","message":"connected","startup":true}
+```
+
+Go SDK: `e.NotifyStartup("success", "connected")`. Startup notes survive prompts
+and `esc`, but `/clear` and `clear_notes` remove them. They are display-only,
+not model context or persisted transcript entries. The optional `startup` field
+is backward compatible. Older hosts treat it as an ordinary notification.
+Without the field, zot cannot identify delayed initialization after interaction
+has begun. Non-interactive modes retain ordinary notification behavior.
 
 #### `clear_notes` (one-way, any time)
 
@@ -1172,6 +1191,8 @@ shape. SDK packages will land in follow-up commits.
 Extensions run with **the user's full filesystem and network
 permissions**. Treat installing an extension the same as installing
 any other binary on your machine.
+
+While `/jail` is active, the built-in `read` and `glob` tools may access each loaded, enabled extension's directory, including explicit `--ext` paths and skill-only bundles. This read-only exception lets skills use bundled reference files without disabling jail. It does not bypass packaged-agent filesystem read permissions or relax `write`, `edit`, or shell checks. Reading a bundled script does not authorize executing it outside the jail. Symlinked extension installations work, but symlinks within them cannot expand access beyond the allowed roots. Reloading extensions replaces the grants with the current selection.
 
 `zot ext install <git-url>` clones from any URL you give it. There's
 no sandbox in v1; if you need isolation, install only extensions you

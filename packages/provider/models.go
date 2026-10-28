@@ -301,6 +301,18 @@ var Catalog = []Model{
 		BaseURL: yoloAutoDefaultBaseURL,
 	},
 
+	// ---- Cheaper Inference ----
+	// Seed entry only: gpt-5.4-mini is the default returned by
+	// defaultModelForProvider so it resolves offline. Cheaper Inference is an
+	// OpenAI-compatible LLM gateway; metadata and prices come from
+	// https://api.cheaperinference.com/v1/models (2026-10-23).
+	{
+		Provider: "cheaperinference", ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini (Cheaper Inference)",
+		ContextWindow: 400000, MaxOutput: 128000, Reasoning: true,
+		PriceInput: 0.4875, PriceOutput: 2.925, PriceCacheRead: 0.04875, PriceCacheWrite: 0.4875,
+		BaseURL: cheaperInferenceDefaultBaseURL,
+	},
+
 	// ---- Anthropic / newer families ----
 	{
 		Provider: "anthropic", ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5 (latest)",

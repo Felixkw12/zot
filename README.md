@@ -82,11 +82,28 @@ The easiest way is to just run `zot` and type `/login`. The TUI opens even witho
 2. provider-specific env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `XAI_API_KEY`, `CEREBRAS_API_KEY`, `TOGETHER_API_KEY`, `HF_TOKEN`, `ZAI_API_KEY`, `XIAOMI_API_KEY`, `MINIMAX_API_KEY`, `FIREWORKS_API_KEY`, `AI_GATEWAY_API_KEY`, `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_TOKEN`, and others for provider-specific backends)
 3. `$ZOT_HOME/auth.json` (API key or OAuth token; mode 0600)
 
-`$ZOT_HOME` defaults to:
+`ZOT_HOME` is an optional environment variable that overrides zot's state directory.
+When it is unset or empty, zot resolves the directory internally:
 - All platforms: `$XDG_STATE_HOME/zot` when `XDG_STATE_HOME` is set
 - macOS fallback: `~/Library/Application Support/zot`
 - Linux fallback: `~/.local/state/zot`
 - Windows fallback: `%LOCALAPPDATA%\zot`
+
+zot does not populate `ZOT_HOME` in your shell. An empty `echo "$ZOT_HOME"`
+is normal and does not mean configuration is missing. Throughout these docs,
+`$ZOT_HOME` is shorthand for the resolved state directory, not a guarantee that
+the environment variable is set.
+
+Before using `$ZOT_HOME` in shell commands, set it to your existing state
+directory. For example, on Linux with the default location:
+
+```sh
+export ZOT_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/zot"
+```
+
+To make that variable available in future shells, add the export to your shell's
+startup file. This is optional for running zot. If you already use a custom state
+directory, use that path instead to avoid switching to a different configuration.
 
 ### API keys from commands
 
@@ -253,7 +270,9 @@ Treat questions and discussions as requests for explanation. Do not edit files o
 
 ## Changelog on update
 
-The first time you launch a newer zot binary, the TUI shows the GitHub release notes for all published releases newer than the last dismissed version, up to the running version. Notes are grouped by version, newest first, so upgrading across multiple versions includes the intervening changes. Use up/down or page up/down to scroll, and any other key to close. The running version is recorded in `config.json`'s `last_changelog_shown` when you dismiss the overlay. Fresh installs don't see a changelog (no upgrade has happened yet). Local builds (`0.0.0`) show only the latest release. The fetch is best-effort with a four-second overall deadline: a network failure, incomplete pagination, or a missing running release silently skips the overlay, with another attempt on the next launch.
+The interactive welcome text remains at the start of the scrolling chat, followed by update notices, release notes, startup extension notifications, and loaded-resource information. Late startup results update this section rather than appearing between the conversation and input. Runtime extension messages stay near the input. Extensions with asynchronous initialization should mark their notifications with `startup: true` (Go SDK: `NotifyStartup`) so zot can distinguish them from runtime messages after interaction begins. See [extension notifications](docs/extensions.md#notify-one-way-any-time).
+
+The first time you launch a newer zot binary, the TUI shows the GitHub release notes for all published releases newer than the last shown version, up to the running version. Notes are grouped by version, newest first, so upgrading across multiple versions includes the intervening changes. They appear below the welcome text in the scrolling chat without opening an overlay or taking keyboard focus. The version is recorded in `config.json`'s `last_changelog_shown` when the notes are added to the startup section. Fresh installs don't see a changelog (no upgrade has happened yet). Local builds (`0.0.0`) show only the latest release. The fetch is best-effort with a four-second overall deadline: a network failure, incomplete pagination, or a missing running release silently skips the notes, with another attempt on the next launch.
 
 ## Usage
 
@@ -268,6 +287,7 @@ zot --json "refactor main.go"    # newline-delimited json events, exit
 zot --continue                   # resume the most recent session for this cwd
 zot --resume                     # pick a session to resume
 zot --list-models                # show supported models
+zot --list-models-json           # picker-visible catalog as JSON, for extensions
 zot --help
 ```
 
@@ -285,6 +305,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 | `--system-prompt <text>` | Replace the default system prompt for this run (also overrides `$ZOT_HOME/SYSTEM.md`; pass `""` for no built-in identity). |
 | `--append-system-prompt <text>` | Append text to the system prompt (repeatable). |
 | `--reasoning off\|minimum\|low\|medium\|high\|xhigh\|max` | Set the reasoning level on supported models (default: off). `max` is a separate opt-in tier above `xhigh`. |
+| `--show-reasoning` | Show live reasoning and retain a compact tail before each reply in interactive mode. Explicitly opt in to `reasoning_delta` events in JSON/RPC mode. Does not change reasoning effort. |
 | `--stats <path>` | With `-p`/`--print`, write generation statistics as JSON. |
 | `-c`, `--continue` | Resume the latest session for this cwd. |
 | `-r`, `--resume` | Pick a session to resume. |
@@ -308,7 +329,7 @@ Print-mode stats contain `provider`, `model`, `prompt_tokens`, `reasoning_tokens
 - `edit`: one or more exact-match replacements in an existing file.
 - `bash`: run a command in the session cwd with merged stdout/stderr and a timeout. On Unix, zot uses `/bin/bash -c` when available, then `bash -c` from `PATH`, and falls back to POSIX `/bin/sh -c` when Bash is unavailable. On Windows, it uses `cmd /C`. macOS ships Bash 3.2 by default, so newer Bash features may be unavailable.
 
-When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd and `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
+When the sandbox is on (see `/jail`), filesystem tools refuse paths outside the session cwd, except that `read` and `glob` can access loaded extension directories. `bash` applies best-effort command checks. Jail mode is an accident-prevention guardrail, not a security boundary.
 
 ### Codemode
 
@@ -406,6 +427,8 @@ Extension-registered commands appear under a divider at the bottom of the popup,
 
 Type `!` followed by a command to run it directly without going through the model. Everything after the `!` is passed to the same shell the `bash` tool uses (`/bin/bash -c` when available on Unix, then `bash -c` from `PATH`, with POSIX `/bin/sh -c` as a fallback; `cmd /C` on Windows), runs in the session working directory, and honors the `/jail` sandbox. The command, merged output, and exit status are appended to the transcript as user context, so the model can use them on the next turn. Running the command does not itself start a model turn. A running `!command` shares the busy state with the agent: `esc` cancels it, and you cannot start one while a turn (or another shell escape) is in flight.
 
+When the input starts with `!` (except the `!@` file picker), Ctrl+V text paste and terminal paste insert text without automatic path quoting or file placeholders. For example, pasting `~/.cache/huggingface/hub` after `!ls ` preserves shell tilde expansion. Quote or escape paths with spaces yourself. Pasting does not execute the command, press Enter to run it.
+
 After a shell command finishes, `up` / `down` input history recalls it with the leading `!`, without its output or exit status. This also works when resuming sessions saved with command metadata. Shell commands from older sessions without that metadata remain excluded from input history.
 
 ### `/sessions`
@@ -441,7 +464,11 @@ Each question runs an isolated agent turn against `system + main transcript + si
 /btw does PUT replace the whole resource?
 ```
 
-Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. Use `@` for file references or `!@` to include text file content or supported images. Escape closes an active file picker before cancelling or closing the chat. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
+Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately.
+
+The side-chat conversation grows in the same terminal flow as the main chat, without a separate viewport or height limit. Use your terminal's normal scrollback to read earlier output, no mouse setting is required. `pgup` and `pgdn` browse the combined main and side-chat history. If **TUI settings > click to position cursor** is enabled, the mouse wheel browses that same combined history instead of native terminal scrollback. Scrolling also works while a tool confirmation is pending, without answering it. The shared display does not add side-chat exchanges to the main model context or saved transcript.
+
+Use `@` for file references or `!@` to include text file content or supported images. Escape closes an active file picker before cancelling or closing the chat. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
 
 ### `/swarm`
 
@@ -517,9 +544,10 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **timestamps > date display**: choose **Start of each day** (default) to include `YYYY-MM-DD` on the first timestamp and when the local day changes, or **Every timestamp** to display `YYYY-MM-DD HH:MM` on every shown timestamp. Stored as `chat_timestamp_date` with values `day_start` or `every_message`. Missing or unknown values use `day_start`. This does not change which messages qualify under the interval setting.
 - **timestamps > interval**: minimum minutes since the last selected timestamp, default 0 (every eligible message). The first eligible message and day changes always qualify. Choose every message (0), 1, 5, 10, 15, 30, or 60 minutes in `/settings` > timestamps > interval, or set any nonnegative integer in `chat_timestamp_interval_minutes` in `config.json`. Missing or negative values use 0. Explicitly saved intervals are preserved. All timestamp settings apply immediately to the transcript. They affect only the interactive display, not model input or print/JSON/RPC output.
 - **collapse tool call rendering**: retain each tool-call header and the last non-empty rendered preview line, hiding the rest of the body. The preview may be an exit status, output line, or truncation summary; failed calls also retain an explicit error indicator. Boxed, flat, and compact layouts are preserved. `ctrl+o` expands the full output. Off by default. Changes apply immediately and persist to `config.json` as `collapse_tool_call`.
+- **show reasoning**: off by default. Shows the latest three wrapped lines of readable reasoning in a compact live preview, updated without answer-text pacing. After completion, the same compact tail remains before the assistant reply. Enable in `/settings`, pass `--show-reasoning`, or set `"show_reasoning": true` in `config.json`. Changes apply immediately and persist. Enabling mid-turn displays subsequent available chunks. Enabling also requests `reasoning.summary: "auto"` on Responses/Codex calls and `thinking.display: "summarized"` on native Anthropic calls with thinking enabled, starting with the next model call and without changing effort. Newer Claude models default to omitting readable thinking even at high effort, so the explicit display request is necessary. An already-running request that did not ask for summaries may remain silent until the next call. Each opted-in model call retains at most 8,192 Unicode characters of readable reasoning as display-only metadata on its assistant message. The tail is saved with the session and restored on resume. Disabling the setting hides both live and saved reasoning without deleting saved tails. This is separate from `/reasoning`, which controls effort. Supported streams are OpenAI-compatible `reasoning_content`, Anthropic thinking, Responses/Codex reasoning summaries, Gemini thought text, and Bedrock Converse reasoning text. Providers may expose only summaries or no readable reasoning at all, especially for simple prompts. The live preview is replaced by the saved tail when the completed reply enters the transcript. Failed or cancelled calls retain a tail only if their partial assistant message is kept. For a useful test, set `/reasoning` to `high` and ask a multi-step problem while watching the response. Continuous-host attached views also show the committed live reasoning tail and restore it on reconnect. Saved tails do not add transcript messages or model context. Older sessions show readable replay summaries when available. Sessions that did not retain readable reasoning cannot reconstruct it. Bedrock signatures and redacted blocks are retained only as replay metadata, never displayed. Plain-text output remains unchanged. JSON/RPC streams require an explicit `--show-reasoning` flag and SDK streams require `sdk.Config{ShowReasoning: true}` to emit `reasoning_delta` events. The saved interactive preference does not opt machine clients in, preserving their default event streams.
 - **show loaded resources at startup**: list the active .zot agent (for `zot run`), loaded `AGENTS.md` paths, extensions, and user-installed skills in compact sections above the transcript. Built-in skills are omitted. Off by default. Changes apply immediately and persist to `config.json` as `show_instructions_at_startup`.
 - **TUI settings**: opens a sub-view for input layout and status placement. **Input style** can be `plain` (default prompt line), `lines` (separator lines above and below the input), or `block` (a user-bubble-style input block). **Status position** places model, usage, and working-directory information above or below the input. **Working spinner position** places the busy spinner above or below the input. Changes apply immediately and persist to `config.json` as `tui_input_style`, `tui_status_position`, and `tui_working_position` (`above_input` or `below_input` for the position fields).
-- **TUI settings > click to position cursor**: off by default, saved as `tui_click_to_position`, and applied immediately. A stationary left click in the main input positions its cursor, including wrapped lines and Unicode text. Click-drag selects visible chat or input text without moving the editor cursor. Selected text stays highlighted after release and is not copied automatically. Press `ctrl+c` to copy explicitly without clearing the selection. `ctrl+shift+c` or `cmd+c` also works if your terminal forwards the chord to zot instead of consuming it. Display updates pause until the selection is dismissed so streaming cannot move the selected text, but the agent continues working. Press `esc` to dismiss the selection without cancelling a running turn. A new click, typing, scrolling, resizing, or disabling the setting also clears it. The wheel browses zot's transcript. Mouse input is ignored while a dialog owns input. Requires SGR button-motion reporting, supported by terminals such as Windows Terminal, iTerm2, Ghostty, and VS Code's integrated terminal on their supported operating systems.
+- **TUI settings > click to position cursor**: off by default, saved as `tui_click_to_position`, and applied immediately. A stationary left click in the main input positions its cursor, including wrapped lines and Unicode text. Click-drag selects visible chat or input text without moving the editor cursor. Selected text stays highlighted after release and is not copied automatically. Press `ctrl+c` to copy explicitly without clearing the selection. `ctrl+shift+c` or `cmd+c` also works if your terminal forwards the chord to zot instead of consuming it. Display updates pause until the selection is dismissed so streaming cannot move the selected text, but the agent continues working. Press `esc` to dismiss the selection without cancelling a running turn. A new click, typing, scrolling, resizing, or disabling the setting also clears it. The wheel browses zot's transcript, including the displayed side-chat conversation while `/btw` is open. Other mouse input is ignored while a dialog owns input. Requires SGR button-motion reporting, supported by terminals such as Windows Terminal, iTerm2, Ghostty, and VS Code's integrated terminal on their supported operating systems.
 
   Clipboard copy uses `pbcopy` on macOS, PowerShell on Windows, or `wl-copy`, `xclip`, or `xsel` on Linux. Over SSH, or when local copying fails, zot sends an OSC 52 clipboard request instead. Your terminal or multiplexer must allow it, and zot cannot verify that request succeeded. Selection is limited to the current visible text, excludes inline images, and copies displayed line breaks rather than reconstructing unwrapped source text. Dragging does not auto-scroll or support word selection by double-click. This is zot-managed selection, not native terminal selection. Many terminals still allow Shift-drag for native selection, including scrollback, but the bypass depends on the terminal. Disable the setting to restore all native mouse behavior.
 - **reasoning level**: choose reasoning for supported models: off, minimum, low, medium, high, xhigh, or max. The `max` tier is opt-in and sent natively to GPT-5.6 and adaptive-thinking Claude models; unsupported backends clamp it to their highest accepted effort. The change is persisted to `config.json` and applied to the next model call. Use `/reasoning` to open this selector directly. The selector only shows distinct levels supported by the active model; models without reasoning support only offer `off`.
@@ -547,6 +575,8 @@ Choose `off`, `70%`, `80%`, `85%` (default), or `90%` under `/settings` → **au
 ### `/jail`
 
 Enforces a sandbox rooted at the cwd shown in the status bar. `read`, `write`, and `edit` resolve their target path (including through symlinks) and refuse anything outside the sandbox. `bash` refuses obvious escape patterns (`sudo`, `rm -rf /`, leading `cd /`, `cd ..`, `cd ~`, `chmod -R`, `dd of=/`, and similar) and rejects shell arguments or redirections that point outside the sandbox. The status bar shows `jailed, ~/your/cwd` while active. Enable **jail new sessions by default** in `/settings` to persist this behavior across launches; `/unjail` then unlocks only the current session.
+
+As a read-only exception, `read` and `glob` can access the directories of loaded, enabled extensions, including explicit `--ext` paths and skill-only bundles. This lets skills read bundled reference files while jailed. Symlinked installations are supported, but links inside an extension cannot grant access outside the allowed roots. Reloading extensions refreshes these grants. Packaged-agent filesystem read permissions still apply. This exception does not relax `write`, `edit`, or `bash` checks, and does not authorize running bundled scripts outside the jail.
 
 This is a guardrail against accidents, not a hard security boundary. If you need real isolation, run zot under docker or a proper sandbox.
 
@@ -1345,7 +1375,13 @@ By default zot loads built-in skills plus user-installed skills from:
 - `./.claude/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md` (Claude-compatible layout)
 - `./.agents/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md` (agent-compatible layout)
 
-See [docs/skills.md](docs/skills.md) for the frontmatter fields, authoring tips, and example skills under `examples/skills/`.
+Discovery skips hidden subdirectories such as `.trash`. To omit a directory
+such as Claude desktop's synced snapshots, set `"skill_exclude":
+["~/.claude/skills/synced"]` in `$ZOT_HOME/config.json`. Exclusions also apply to
+symlink aliases, the skill picker, and pins. Discovery precedence is unchanged.
+Startup diagnostics stay above the conversation instead of hiding new replies.
+
+See [docs/skills.md](docs/skills.md) for exclusion rules, frontmatter fields, authoring tips, and example skills under `examples/skills/`.
 
 ## Telegram bot (bridge)
 

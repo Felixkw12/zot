@@ -2,11 +2,11 @@ package modes
 
 import "github.com/patriceckhart/zot/packages/tui"
 
-// welcomeBanner returns the intro text shown at the top of an empty chat.
+// welcomeBanner returns the intro text shown above startup information and chat.
 // It uses the `zot` label color (same as the assistant) for consistency.
 //
 // When version is non-empty AND showVersion is true, the headline
-// reads "i'm zot (vX.Y.Z). ..." so users see which build they're on
+// reads "zot (vX.Y.Z). ..." so users see which build they're on
 // the moment zot starts. After welcomeVersionDuration the caller
 // flips showVersion off and the headline reverts to plain text.
 func welcomeBanner(th tui.Theme, version string, showVersion bool) []string {

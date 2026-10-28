@@ -33,6 +33,10 @@ type Config struct {
 	Theme       string             `json:"theme"`
 	Codemode    *codemode.Settings `json:"codemode,omitempty"`
 
+	// SkillExclude omits filesystem paths and their descendants from skill
+	// discovery. Relative paths use the session starting directory.
+	SkillExclude []string `json:"skill_exclude,omitempty"`
+
 	// ToolRender selects how tool calls are drawn in interactive mode.
 	// "box" (default, or empty) wraps each call in a bordered panel;
 	// "flat" drops the frame for a quiet header line plus indented,
@@ -120,6 +124,9 @@ type Config struct {
 	ChatTimestampIntervalMinutes *int `json:"chat_timestamp_interval_minutes,omitempty"`
 	// ChatTimestampDate is day_start (default) or every_message.
 	ChatTimestampDate string `json:"chat_timestamp_date,omitempty"`
+
+	// ShowReasoning displays compact live and saved reasoning tails in the interactive UI.
+	ShowReasoning bool `json:"show_reasoning,omitempty"`
 
 	// ShowInstructionsAtStartup lists loaded context files, extensions,
 	// and user-installed skills above the transcript. Off by default;
@@ -486,6 +493,10 @@ func resolveCredentialFull(ctx context.Context, provider, explicit string, comma
 		}
 	case "yolo-auto":
 		if v := os.Getenv("YOLO_AUTO_API_KEY"); v != "" {
+			return v, "apikey", "", nil
+		}
+	case "cheaperinference":
+		if v := os.Getenv("CHEAPER_INFERENCE_API_KEY"); v != "" {
 			return v, "apikey", "", nil
 		}
 	case "mistral":

@@ -14,12 +14,13 @@ import (
 )
 
 type observedSession struct {
-	session  *AttachedSession
-	view     *core.Agent
-	messages chan provider.Message
-	deltas   chan string
-	resets   chan struct{}
-	done     chan error
+	session   *AttachedSession
+	view      *core.Agent
+	messages  chan provider.Message
+	deltas    chan string
+	reasoning chan string
+	resets    chan struct{}
+	done      chan error
 }
 
 func startObservedSession(t *testing.T, ctx context.Context, client *Client, conversationID string) observedSession {
@@ -29,7 +30,7 @@ func startObservedSession(t *testing.T, ctx context.Context, client *Client, con
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := observedSession{s, view, make(chan provider.Message, 16), make(chan string, 32), make(chan struct{}, 16), make(chan error, 1)}
+	o := observedSession{session: s, view: view, messages: make(chan provider.Message, 16), deltas: make(chan string, 32), reasoning: make(chan string, 32), resets: make(chan struct{}, 16), done: make(chan error, 1)}
 	go func() {
 		o.done <- s.Observe(ctx, func(ev core.AgentEvent) {
 			switch e := ev.(type) {
@@ -37,6 +38,8 @@ func startObservedSession(t *testing.T, ctx context.Context, client *Client, con
 				o.messages <- e.Message
 			case core.EvTextDelta:
 				o.deltas <- e.Delta
+			case core.EvReasoningDelta:
+				o.reasoning <- e.Delta
 			}
 		}, func() { o.resets <- struct{}{} })
 	}()
@@ -247,14 +250,21 @@ func TestAttachedSessionCloseDoesNotCancelHostWork(t *testing.T) {
 	}
 }
 
-type gatedAttachedClient struct{ release <-chan struct{} }
+type gatedAttachedClient struct {
+	release   <-chan struct{}
+	reasoning string
+}
 
 func (gatedAttachedClient) Name() string { return "synthetic" }
 func (c gatedAttachedClient) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Event, error) {
 	events := make(chan provider.Event, 2)
 	go func() {
 		defer close(events)
-		events <- provider.EventTextDelta{Delta: "live remote text"}
+		if c.reasoning != "" {
+			events <- provider.EventReasoningDelta{Delta: c.reasoning}
+		} else {
+			events <- provider.EventTextDelta{Delta: "live remote text"}
+		}
 		select {
 		case <-c.release:
 			events <- provider.EventDone{Stop: provider.StopEnd, Message: provider.Message{Role: provider.RoleAssistant, Content: []provider.Content{provider.TextBlock{Text: "live remote text"}}}}
@@ -269,7 +279,7 @@ func TestAttachedSessionStreamsOtherClientsOutputWhileIdle(t *testing.T) {
 	defer cancel()
 	r := newTestRuntime(t)
 	release := make(chan struct{})
-	engine := echoEngine(gatedAttachedClient{release}, nil)
+	engine := echoEngine(gatedAttachedClient{release: release}, nil)
 	host, err := NewHost(r, engine, HostOptions{Execution: ExecutionOptions{PartialFlushInterval: time.Millisecond}})
 	if err != nil {
 		t.Fatal(err)

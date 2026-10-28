@@ -1084,7 +1084,13 @@ func (m *Manager) readLoop(ext *Extension, scanner *bufio.Scanner) {
 		case "notify":
 			var n extproto.NotifyFromExt
 			if err := json.Unmarshal(line, &n); err == nil {
-				m.hooks.Notify(ext.Manifest.Name, n.Level, n.Message)
+				if startup, ok := m.hooks.(interface {
+					NotifyStartup(string, string, string)
+				}); n.Startup && ok {
+					startup.NotifyStartup(ext.Manifest.Name, n.Level, n.Message)
+				} else {
+					m.hooks.Notify(ext.Manifest.Name, n.Level, n.Message)
+				}
 			}
 		case "clear_notes":
 			m.hooks.ClearNotes(ext.Manifest.Name)
@@ -1601,6 +1607,20 @@ func stopExtensions(exts []*Extension, gracePeriod time.Duration) {
 			_ = ext.logFile.Close()
 		}
 	}
+}
+
+// ReadOnlyRoots returns the directories of selected, enabled extensions.
+// This includes bundles with no subprocess or registered tools.
+func (m *Manager) ReadOnlyRoots() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var roots []string
+	for _, ext := range m.extOrder {
+		if ext.Manifest.IsEnabled() {
+			roots = append(roots, ext.Dir)
+		}
+	}
+	return roots
 }
 
 // All returns every extension currently tracked, enabled or not.

@@ -25,7 +25,7 @@ Use `/login` in interactive mode. Type in either provider picker to filter the l
 - `api key`: stores an API key in `$ZOT_HOME/auth.json` when the provider uses a normal key.
 - `subscription`: stores OAuth credentials for subscription-backed providers.
 
-Use `/logout` to remove stored credentials.
+Use `/logout` to choose stored credentials to remove, or `/logout <provider>` to remove a specific provider's credentials. This also works for custom providers removed from `models.json`. Use `/logout all` to remove all stored provider credentials, including custom providers.
 
 Some providers need more than a single pasted key. For those providers,
 `/login` shows setup instructions instead of opening a localhost browser form.
@@ -190,6 +190,7 @@ show instructions and should be configured with environment variables.
 | OpenRouter | `OPENROUTER_API_KEY` | `openrouter` |
 | Gondola | `GONDOLA_API_KEY` | `gondola` |
 | Yolo-Auto | `YOLO_AUTO_API_KEY` | `yolo-auto` |
+| Cheaper Inference | `CHEAPER_INFERENCE_API_KEY` | `cheaperinference` |
 | Mistral | `MISTRAL_API_KEY` | `mistral` |
 | ZAI | `ZAI_API_KEY` | `zai` |
 | Xiaomi MiMo | `XIAOMI_API_KEY` | `xiaomi` |
@@ -260,6 +261,26 @@ export OPENROUTER_API_KEY=...
 zot --provider openrouter
 ```
 
+## Cheaper Inference
+
+Use `CHEAPER_INFERENCE_API_KEY` or `/login` with provider `cheaperinference`.
+The offline default is `gpt-5.4-mini`. At startup, authenticated discovery
+adds the key's streaming Chat Completions models to `/model`, including
+published context/output limits, reasoning, vision, and token prices. Media,
+non-streaming, and Responses-only models are excluded from discovery.
+
+Discovery refreshes even when the shared catalog cache is fresh. Failed
+refreshes or logout remove previously discovered account entries, leaving the
+offline default and explicit `models.json` overrides available. Command-backed
+keys are not executed for background discovery.
+
+Explicit and saved model IDs are preserved before discovery finishes, including
+plain IDs such as `claude-fable-5`. Unknown IDs are validated by the gateway
+rather than replaced with another model. Without catalog metadata, requests
+use a conservative 4,096-token output limit. Use `models.json` to supply context
+limits and capabilities when discovery is unavailable. Cached token prices are
+estimates, not a quote for the route that ultimately serves a request.
+
 ## Local LM Studio server
 
 Register the `lmstudio` provider through `/login`, choose `api key`, and select
@@ -304,8 +325,10 @@ User entries take precedence over discovery.
 The discovered catalog stays in memory, separate from the six-hour cloud model
 cache and llama.cpp's entries. Failed refreshes retain the previous snapshot,
 and `/model` reports discovery errors while keeping other providers accessible.
-Use `/logout lmstudio` to remove the connection and stop discovery. Background
-refresh never executes API-key commands.
+Use `/logout lmstudio` to remove the connection and stop discovery. The selected
+provider and model remain saved, and zot can restart without the connection.
+Reconnect through `/login` or select another provider through `/model` before
+sending prompts. Background refresh never executes API-key commands.
 
 The existing coding loop, tools, permissions, and built-in provider pricing
 remain unchanged. For older builds without `LM Studio` in `/login`, the manual
@@ -357,6 +380,8 @@ export LLAMA_API_KEY=optional-secret
 ```
 
 If a key is configured, start the router with the same `--api-key` value. A server bound only to `127.0.0.1` normally does not need authentication.
+
+Use `/logout llama.cpp` to remove the saved connection. The selected provider and model remain saved, and zot can restart without the connection. Reconnect through `/login` or select another provider through `/model` before sending prompts. `LLAMA_BASE_URL` still overrides the saved connection. Non-interactive inference requires a configured server URL or an explicit `--base-url`.
 
 After login, `/llama` becomes visible. It shows model state, searches Hugging Face for GGUF repositories, offers available quantizations, reports download and load progress, and explicitly loads or unloads models. Press `d` on a router-downloaded cache model to ask the router to remove it after confirmation. Models discovered through `--models-dir` or a preset are not removable through the router API and must be deleted from their configured source. Some llama.cpp versions retain shared Hugging Face repository artifacts such as `mmproj` files after removing the selected GGUF; remove that repository's cache directory manually if those artifacts are no longer needed. `HF_TOKEN` raises Hugging Face API limits and may be required for repository metadata. For gated files, approve access first and provide the authorized token to the `llama-server` process because the router performs the download.
 
@@ -615,11 +640,14 @@ environment or `auth.json` is sent as a bearer token when present. A missing key
 is not an error because local servers commonly accept unauthenticated requests.
 Background refresh never executes an `api_key_command`; opening `/model` does.
 
-Only model IDs are read from the response. Discovered models default to a
-32,768 token context and 4,096 output tokens, have zero pricing, and no
-reasoning controls. IDs containing `embed` are skipped. Entries in the
-provider's `models` array override discovered metadata for the same ID, which
-is how to raise limits or enable reasoning for a specific model.
+Besides the model ID, zot reads a context length reported per model as
+`max_model_len` (vLLM, oMLX), `context_length`, or `context_window`.
+Without one, discovered models default to a 32,768 token context. Output is
+limited to 4,096 tokens, or the context length if smaller. Discovered models
+have zero pricing and no reasoning controls. IDs containing `embed` are
+skipped. Entries in the provider's `models` array override discovered metadata
+for the same ID, which is how to raise limits or enable reasoning for a
+specific model.
 
 The discovered list stays in memory, separate from the six-hour cloud model
 cache. A failed refresh keeps the previous snapshot for that provider and
@@ -631,6 +659,20 @@ in `models.json`. The `/models` wire format is assumed to be OpenAI style
 `/model` also lists custom providers with a configured base URL and no key.
 `--list-models` prints the catalog before the background refresh completes,
 so discovered models may be missing there.
+
+`--list-models-json` exports the catalog filtered by the same provider availability
+check as `/model`. It prints a JSON array sorted by provider then model ID, with
+`provider`, `id`, `name`, `reasoning`, `context_window`, `max_output`, and `source`
+fields. An empty result is `[]`.
+
+Before exporting, it waits for discovery from registered LM Studio and llama.cpp
+servers and opted-in custom providers. Each of these three refresh stages has a
+three-second timeout, including one shared timeout for all custom providers.
+Failures are reported on stderr while stdout remains valid JSON with the
+available catalog entries. Cloud model metadata comes from the built-in catalog
+and disk cache, without waiting for cloud discovery. Credential commands are never
+executed for this export, so discovery requiring `api_key_command` is skipped.
+Models already in the catalog for those providers can still be listed.
 
 ## Credential resolution
 

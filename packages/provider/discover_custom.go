@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,7 +12,8 @@ import (
 )
 
 // Conservative metadata for models that a list endpoint describes by ID
-// only. Explicit models.json entries override these values.
+// only. A context length reported by the endpoint replaces the context
+// default, and explicit models.json entries override both.
 const (
 	customDiscoveryContextWindow = 32768
 	customDiscoveryMaxOutput     = 4096
@@ -37,9 +39,11 @@ func customModelsURL(baseURL string) (string, error) {
 }
 
 // DiscoverCustomProvider lists models from a user-defined provider's
-// OpenAI-style /models endpoint. Only IDs are trusted from the response;
-// context and output limits use conservative defaults because
-// self-hosted gateways rarely report them consistently. Entries whose ID
+// OpenAI-style /models endpoint. Besides the ID, only a context length
+// reported as max_model_len (vLLM, oMLX), context_length or
+// context_window is read; otherwise context and output limits use
+// conservative defaults because self-hosted gateways rarely report them
+// consistently. Entries whose ID
 // mentions embeddings are skipped. Discovered models carry the provider's
 // base URL so they route like models.json entries.
 func DiscoverCustomProvider(ctx context.Context, providerID, baseURL, apiKey string) ([]Model, error) {
@@ -72,7 +76,10 @@ func DiscoverCustomProvider(ctx context.Context, providerID, baseURL, apiKey str
 	}
 	var page struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID            string          `json:"id"`
+			MaxModelLen   json.RawMessage `json:"max_model_len"`
+			ContextLength json.RawMessage `json:"context_length"`
+			ContextWindow json.RawMessage `json:"context_window"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(nil, resp.Body, 8<<20)).Decode(&page); err != nil {
@@ -89,15 +96,33 @@ func DiscoverCustomProvider(ctx context.Context, providerID, baseURL, apiKey str
 			continue
 		}
 		seen[id] = true
+		contextWindow := customDiscoveryContextWindow
+		for _, raw := range []json.RawMessage{d.MaxModelLen, d.ContextLength, d.ContextWindow} {
+			if n := discoveredTokenLimit(raw); n > 0 {
+				contextWindow = n
+				break
+			}
+		}
 		models = append(models, Model{
 			Provider:      providerID,
 			ID:            id,
 			DisplayName:   id,
-			ContextWindow: customDiscoveryContextWindow,
-			MaxOutput:     customDiscoveryMaxOutput,
+			ContextWindow: contextWindow,
+			MaxOutput:     min(customDiscoveryMaxOutput, contextWindow),
 			BaseURL:       strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 			Source:        "live",
 		})
 	}
 	return models, nil
+}
+
+// discoveredTokenLimit decodes a token count reported by a custom /models
+// endpoint. Missing, non-numeric, fractional, or non-positive values yield
+// 0 so one malformed field never fails discovery.
+func discoveredTokenLimit(raw json.RawMessage) int {
+	var n float64
+	if len(raw) == 0 || json.Unmarshal(raw, &n) != nil || n < 1 || n > math.MaxInt32 || n != math.Trunc(n) {
+		return 0
+	}
+	return int(n)
 }

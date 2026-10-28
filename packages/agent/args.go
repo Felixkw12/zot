@@ -49,6 +49,7 @@ type Args struct {
 	// value is an intentional override, distinct from leaving the flag absent.
 	SystemPromptSet    bool
 	AppendSystemPrompt []string
+	ShowReasoning      bool
 	Reasoning          string
 	Temperature        *float32
 
@@ -133,10 +134,11 @@ type Args struct {
 	// are still written for modes other than bash ask.
 	Yes bool
 
-	ListModels bool
-	Help       bool
-	Version    bool
-	StatsPath  string // write print-mode generation statistics as JSON
+	ListModels     bool
+	ListModelsJSON bool // print the picker-visible catalog as JSON and exit
+	Help           bool
+	Version        bool
+	StatsPath      string // write print-mode generation statistics as JSON
 
 	Prompt string // concatenated positional args
 
@@ -238,6 +240,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.CodemodeMode = "only"
 		case "--list-models":
 			a.ListModels = true
+		case "--list-models-json":
+			a.ListModelsJSON = true
 		case "--experimental-oauth":
 			// deprecated: subscription login is always available.
 			// accepted silently for backwards compatibility.
@@ -304,6 +308,8 @@ func ParseArgs(in []string) (Args, error) {
 			a.NoYolo = true
 		case "-y", "--yes":
 			a.Yes = true
+		case "--show-reasoning":
+			a.ShowReasoning = true
 		case "--reasoning":
 			v, err := want(&i, arg)
 			if err != nil {
@@ -527,6 +533,7 @@ func printHelp(out *os.File, version string) {
 		row{"--api-key KEY", "api key for this run (env / auth.json fallback)"},
 		row{"--base-url URL", "override provider api base url"},
 		row{"--insecure", "skip TLS certificate verification (for self-signed-cert endpoints)"},
+		row{"--show-reasoning", "show live and saved reasoning (also opt in to JSON/RPC reasoning events)"},
 		row{"--reasoning off|minimum|low|medium|high|xhigh|max", "set reasoning level on supported models"},
 		row{"--temperature N", "sampling temperature, 0 to 2 (omit for provider default)"},
 	)
@@ -555,6 +562,7 @@ func printHelp(out *os.File, version string) {
 	section("misc",
 		row{"--max-steps N", "agent loop iteration cap (default: unlimited)"},
 		row{"--list-models", "print known models and exit"},
+		row{"--list-models-json", "print the picker-visible catalog as JSON and exit"},
 		row{"-h, --help", "show this help"},
 		row{"-v, --version", "show version info"},
 	)

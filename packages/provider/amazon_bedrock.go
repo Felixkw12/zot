@@ -447,6 +447,18 @@ func (c *bedrockClient) buildRequest(req Request) (*bedrockRequest, error) {
 			switch v := c.(type) {
 			case TextBlock:
 				bm.Content = append(bm.Content, map[string]interface{}{"text": v.Text})
+			case ReasoningBlock:
+				// Only replay reasoning captured from Converse, never another protocol.
+				switch v.ID {
+				case bedrockReasoningID:
+					bm.Content = append(bm.Content, map[string]interface{}{
+						"reasoningContent": map[string]interface{}{"reasoningText": map[string]string{"text": v.Summary, "signature": v.Encrypted}},
+					})
+				case bedrockRedactedReasoningID:
+					bm.Content = append(bm.Content, map[string]interface{}{
+						"reasoningContent": map[string]interface{}{"redactedContent": v.Encrypted},
+					})
+				}
 			case ToolCallBlock:
 				var input map[string]interface{}
 				_ = json.Unmarshal(v.Arguments, &input)
@@ -782,7 +794,12 @@ func (c *bedrockClient) runStream(ctx context.Context, resp *http.Response, req 
 			var d struct {
 				ContentBlockIndex int `json:"contentBlockIndex"`
 				Delta             struct {
-					Text    string `json:"text"`
+					Text             string `json:"text"`
+					ReasoningContent *struct {
+						Text            string `json:"text"`
+						Signature       string `json:"signature"`
+						RedactedContent []byte `json:"redactedContent"`
+					} `json:"reasoningContent"`
 					ToolUse *struct {
 						Input string `json:"input"`
 					} `json:"toolUse"`
@@ -799,6 +816,14 @@ func (c *bedrockClient) runStream(ctx context.Context, resp *http.Response, req 
 			if d.Delta.Text != "" {
 				st.text.WriteString(d.Delta.Text)
 				out <- EventTextDelta{Delta: d.Delta.Text}
+			}
+			if r := d.Delta.ReasoningContent; r != nil {
+				st.reasoning.WriteString(r.Text)
+				st.signature.WriteString(r.Signature)
+				st.redacted = append(st.redacted, r.RedactedContent...)
+				if r.Text != "" {
+					out <- EventReasoningDelta{Delta: r.Text}
+				}
 			}
 			if d.Delta.ToolUse != nil && d.Delta.ToolUse.Input != "" {
 				st.toolArgs.WriteString(d.Delta.ToolUse.Input)
@@ -824,6 +849,10 @@ func (c *bedrockClient) runStream(ctx context.Context, resp *http.Response, req 
 					ID: st.toolID, Name: st.toolName, Arguments: json.RawMessage(args),
 				})
 				out <- EventToolEnd{ID: st.toolID}
+			} else if st.reasoning.Len() > 0 || st.signature.Len() > 0 {
+				finalMsg.Content = append(finalMsg.Content, ReasoningBlock{ID: bedrockReasoningID, Summary: st.reasoning.String(), Encrypted: st.signature.String()})
+			} else if len(st.redacted) > 0 {
+				finalMsg.Content = append(finalMsg.Content, ReasoningBlock{ID: bedrockRedactedReasoningID, Encrypted: base64.StdEncoding.EncodeToString(st.redacted)})
 			} else if st.text.Len() > 0 {
 				finalMsg.Content = append(finalMsg.Content, TextBlock{Text: st.text.String()})
 			}
@@ -866,7 +895,13 @@ func (c *bedrockClient) runStream(ctx context.Context, resp *http.Response, req 
 	out <- EventDone{Stop: stop, Message: finalMsg}
 }
 
+const bedrockReasoningID = "amazon-bedrock-reasoning"
+const bedrockRedactedReasoningID = "amazon-bedrock-redacted"
+
 type bedrockBlockState struct {
+	reasoning strings.Builder
+	signature strings.Builder
+	redacted  []byte
 	isToolUse bool
 	toolID    string
 	toolName  string

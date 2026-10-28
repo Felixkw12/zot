@@ -89,6 +89,13 @@ func (r Resolved) HasCredential() bool {
 // effect on the second pass (existing names are preserved). Built-in
 // tools always win on conflict.
 func (r *Resolved) MergeExtensionTools(mgr ExtensionToolSource) {
+	// Refresh even when no tools are registered, for example skill-only
+	// bundles or a reload that removed the last extension.
+	var roots []string
+	if source, ok := mgr.(interface{ ReadOnlyRoots() []string }); ok {
+		roots = source.ReadOnlyRoots()
+	}
+	r.Sandbox.SetReadOnlyRoots(roots)
 	if mgr == nil {
 		return
 	}
@@ -201,6 +208,8 @@ func defaultModelForProvider(prov string) string {
 		return "kimi-k3"
 	case "yolo-auto":
 		return "qwen3.8-flash"
+	case "cheaperinference":
+		return "gpt-5.4-mini"
 	case "mistral":
 		return "mistral-large-latest"
 	case "zai":
@@ -242,7 +251,7 @@ func defaultModelForProvider(prov string) string {
 var knownProviders = []string{
 	"anthropic", "openai", "openai-codex", "openai-responses", "kimi", "deepseek", "google", "ollama", provider.LlamaCPPProviderID, provider.LMStudioProviderID,
 	"moonshotai", "moonshotai-cn",
-	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto",
+	"cerebras", "groq", "xai", "together", "huggingface", "openrouter", "gondola", "yolo-auto", "cheaperinference",
 	"mistral", "zai",
 	"xiaomi", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp",
 	"minimax", "minimax-cn",
@@ -497,6 +506,16 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		}
 		err = nil
 	}
+	// Cheaper Inference uses plain model IDs across multiple labs. Preserve
+	// explicit selections before asynchronous discovery completes, rather than
+	// substituting the seed model. The server validates unknown IDs.
+	if err != nil && provName == "cheaperinference" {
+		resolvedModel = provider.Model{
+			Provider: provName, ID: model, DisplayName: model,
+			ContextWindow: 32768, MaxOutput: 4096, Source: "gateway",
+		}
+		err = nil
+	}
 	// Custom providers are open-catalogue like ollama: any model id the
 	// endpoint understands is valid. Use the provider-level base URL.
 	if err != nil {
@@ -593,21 +612,32 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 		if configErr != nil {
 			return Resolved{}, configErr
 		}
-		if root == "" {
-			return Resolved{}, fmt.Errorf("LM Studio requires a server URL registered through /login or an explicit --base-url")
+		if root != "" {
+			args.BaseURL = root + "/v1"
 		}
-		args.BaseURL = root + "/v1"
 	}
 	if args.BaseURL == "" && provName == provider.LlamaCPPProviderID {
 		managementURL, _, configErr := resolveLlamaCPPConfig(ctx, apiKeyCommandExecute)
 		if configErr != nil {
 			return Resolved{}, configErr
 		}
-		var baseErr error
-		args.BaseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
-		if baseErr != nil {
-			return Resolved{}, baseErr
+		if managementURL != "" {
+			var baseErr error
+			args.BaseURL, baseErr = provider.LlamaCPPInferenceURL(managementURL)
+			if baseErr != nil {
+				return Resolved{}, baseErr
+			}
 		}
+	}
+	if args.BaseURL == "" && (provName == provider.LlamaCPPProviderID || provName == provider.LMStudioProviderID) {
+		endpointErr := fmt.Errorf("%s requires a server URL registered through /login or an explicit --base-url", provName)
+		if requireCred || inferenceOnly {
+			return Resolved{}, endpointErr
+		}
+		// Keep interactive startup available after logout, but never build
+		// a local client without an endpoint, even with an explicit API key.
+		cred, method, accountID = "", "", ""
+		credErr = endpointErr
 	}
 
 	// Insecure TLS is intentionally scoped to explicit custom endpoints.
@@ -705,7 +735,7 @@ func resolve(ctx context.Context, args Args, requireCred, inferenceOnly bool) (R
 			}
 		}
 		var errs []error
-		discovered, errs = skills.DiscoverSources(sources, true)
+		discovered, errs = skills.DiscoverSourcesExcluding(sources, true, resolveSkillExcludes(cfg.SkillExclude, args.CWD, homeDir))
 		for _, err := range errs {
 			skillDiagnostics = append(skillDiagnostics, err.Error())
 		}
@@ -965,6 +995,8 @@ func (r Resolved) NewClient() provider.Client {
 		return wrap(provider.NewGondola(r.Credential, r.BaseURL))
 	case "yolo-auto":
 		return wrap(provider.NewYoloAuto(r.Credential, r.BaseURL))
+	case "cheaperinference":
+		return wrap(provider.NewCheaperInference(r.Credential, r.BaseURL))
 	case "zai":
 		return wrap(provider.NewZAI(r.Credential, r.BaseURL))
 	case "xiaomi":
@@ -1298,6 +1330,8 @@ func envVarName(provider string) string {
 		return "GONDOLA"
 	case "yolo-auto":
 		return "YOLO_AUTO"
+	case "cheaperinference":
+		return "CHEAPER_INFERENCE"
 	case "mistral":
 		return "MISTRAL"
 	case "zai":

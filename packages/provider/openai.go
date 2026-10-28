@@ -850,6 +850,7 @@ func (c *openaiClient) runStream(ctx context.Context, resp *http.Response, req R
 			for _, ch := range chunk.Choices {
 				if ch.Delta.ReasoningContent != "" {
 					reasoningBuf.WriteString(ch.Delta.ReasoningContent)
+					out <- EventReasoningDelta{Delta: ch.Delta.ReasoningContent}
 				}
 				if ch.Delta.Content != "" {
 					appendText(ch.Delta.Content)

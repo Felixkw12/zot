@@ -30,7 +30,8 @@ func userSkillSnapshot(args Args) []*skills.Skill {
 		extSources, _ := extensions.PlanSkillSources(ZotHome(), args.CWD, args.Exts, !args.NoExt)
 		sources = append(extSources, sources...)
 	}
-	list, _ := skills.DiscoverSources(sources, true)
+	cfg, _ := LoadConfig()
+	list, _ := skills.DiscoverSourcesExcluding(sources, true, resolveSkillExcludes(cfg.SkillExclude, args.CWD, userHome))
 	return skills.VisibleSkills(list)
 }
 

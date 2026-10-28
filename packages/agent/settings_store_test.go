@@ -31,6 +31,25 @@ func TestConfigSettingsStorePersistsFuzzySkillSuggest(t *testing.T) {
 	}
 }
 
+func TestConfigSettingsStorePersistsShowReasoning(t *testing.T) {
+	t.Setenv("ZOT_HOME", t.TempDir())
+	if err := SaveConfig(Config{Theme: "dark"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{true, false} {
+		if err := (configSettingsStore{}).SetShowReasoning(enabled); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.ShowReasoning != enabled || cfg.Theme != "dark" {
+			t.Fatalf("reasoning=%v theme=%q", cfg.ShowReasoning, cfg.Theme)
+		}
+	}
+}
+
 func TestConfigSettingsStorePersistsShowInstructionsAtStartup(t *testing.T) {
 	t.Setenv("ZOT_HOME", t.TempDir())
 	if err := SaveConfig(Config{Theme: "dark"}); err != nil {

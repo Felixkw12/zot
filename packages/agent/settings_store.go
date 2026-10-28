@@ -159,6 +159,15 @@ func (configSettingsStore) SetChatTimestampInterval(minutes int) error {
 	return SaveConfig(cfg)
 }
 
+func (configSettingsStore) SetShowReasoning(enabled bool) error {
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	cfg.ShowReasoning = enabled
+	return SaveConfig(cfg)
+}
+
 func (configSettingsStore) SetShowInstructionsAtStartup(enabled bool) error {
 	cfg, err := LoadConfig()
 	if err != nil {

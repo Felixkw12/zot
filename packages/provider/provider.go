@@ -232,6 +232,14 @@ type EventTextDelta struct {
 
 func (EventTextDelta) isEvent() {}
 
+// EventReasoningDelta contains only readable reasoning or summary text.
+// Opaque signatures and encrypted reasoning are never included.
+type EventReasoningDelta struct {
+	Delta string
+}
+
+func (EventReasoningDelta) isEvent() {}
+
 type EventToolStart struct {
 	ID   string
 	Name string
@@ -279,6 +287,9 @@ type Request struct {
 	// "max". Empty disables reasoning. The max tier is sent natively only to
 	// models that support it and clamped elsewhere.
 	Reasoning string
+	// StreamReasoning requests readable reasoning or summaries when the
+	// provider requires an explicit opt-in. It does not change effort.
+	StreamReasoning bool
 	// SessionID, when set, is the conversation id. Providers that support
 	// sticky routing (OpenRouter session_id) forward it; others ignore it.
 	SessionID string

@@ -74,7 +74,8 @@ attached drivers replay missed committed results before reporting completion,
 even if the host settled the submission while its watch was disconnected. If the
 host connection itself closes, the TUI reports that live updates stopped.
 Reconnect the TUI to resume, connections are not automatically redialed.
-A newly attached view loads the newest history page and any live partial text.
+A newly attached view loads the newest history page and any live partial text
+or readable reasoning suffix. Display of reasoning is opt-in in the TUI.
 Ctrl+C also detaches an idle CLI `attach --follow` or an attach waiting for a
 submission, without cancelling the host's work.
 
@@ -205,14 +206,16 @@ Execution and recovery:
   submission, which places the held inputs first, oldest first. An abort
   withdraws queued prompts (state `withdrawn`, history kept) and writes
   queued writes; it never starts the next chain.
-- Partial stream persistence: streamed text is committed as a `partial`
-  record so attached clients render live output. The flusher sleeps until
-  text arrives, waits `PartialFlushInterval` (default 100 ms) to batch
+- Partial stream persistence: streamed text and a bounded readable reasoning
+  suffix are committed as a `partial` record so attached clients render live
+  output. The flusher sleeps until text or reasoning arrives, waits
+  `PartialFlushInterval` (default 100 ms) to batch
   deltas, and after each commit waits at least that interval and at least
   the record's size at 512 KiB/s. Each commit rewrites the whole record,
-  so this bounds write volume for long answers (the largest record waits
-  0.5 s) while answers under about 51 KiB keep the 100 ms cadence. The
-  final assistant commit removes the record, and an attempt that fails or
+  so this bounds write volume for long answers (256 KiB of answer text plus
+  32 KiB of reasoning waits up to 0.5625 s) while combined output under
+  about 51 KiB keeps the 100 ms cadence. The final assistant commit removes
+  the record, and an attempt that fails or
   is interrupted retains its text as a final partial for inspection.
   Partial output is never model context.
 - Remote execution: `WorkerServer` runs tools in another process behind a
@@ -579,13 +582,14 @@ Tools without it default to `ReplayNever`. Extension tools default to
 ### Observation
 
 Nothing reaches an observer before its commit. The engine events of a model
-attempt or tool call are held by the invocation: streamed text and tool
-progress are released after the `partial` or progress commit that records
-them, everything else after the commit that settles the phase. An invocation
+attempt or tool call are held by the invocation: streamed text, readable
+reasoning, and tool progress are released after the `partial` or progress
+commit that records them, everything else after the commit that settles the
+phase. An invocation
 that crashes, is fenced out, or is aborted before its commit publishes
 nothing, which matches what a client reads after a restart. With partials
-disabled (`PartialFlushInterval < 0`) streamed text arrives with the
-response commit.
+disabled (`PartialFlushInterval < 0`) streamed text and reasoning arrive
+with the response commit.
 
 A conversation view is the live state of a conversation as typed documents:
 `execution` (chain and live tasks), `queue`, `usage`, `metadata` (`{title}`),
@@ -654,9 +658,10 @@ continues.
 
 - Tools within one round execute sequentially, in call order, unless
   `ParallelTools` is set.
-- Streamed text is committed as a bounded `partial` record (at most
-  `MaxPartialBytes`, 256 KiB) at the flush interval; a crash loses at most
-  that window. Tool progress keeps the last 16 KiB per running call.
+- Partial records retain at most `MaxPartialBytes` (256 KiB) of answer text
+  and `MaxPartialReasoningBytes` (32 KiB) of readable reasoning tail, plus
+  metadata, at the flush interval. A crash loses at most that window. Tool
+  progress keeps the last 16 KiB per running call.
 - Queue-policy submissions made while a chain is active are answered by the
   next chain, in slot order (`Reorder` changes it); steer-policy submissions
   join the active chain at its next request boundary.
@@ -673,9 +678,26 @@ continues.
 - Reconciliation over the extension protocol depends on the extension
   keeping its own operation ledger; without a `Reconciler` every answer is
   unknown.
-- The attached TUI renders streamed text from partial records at the flush
-  cadence (slower for very long answers), not per provider token. Tool
-  progress is committed at most every 100 ms plus once before the result.
+- The attached TUI renders streamed text and optional live reasoning from
+  partial records at the flush cadence (slower for very long answers), not
+  per provider token. Enable the reasoning preview with `/settings` or
+  `--show-reasoning` on the attached client. Hosts commit a rolling readable
+  reasoning suffix of at most 32 KiB in `Partial.reasoning`, with
+  `reasoning_bytes` tracking its total byte position. Hosts with partial
+  streaming enabled also request readable summaries on Responses/Codex calls
+  and summarized thinking on native Anthropic calls with thinking enabled,
+  without changing effort. These additive fields
+  are separate from answer `text` and never contain signatures or encrypted
+  payloads. Old hosts omit them and old clients can ignore them. Joining or
+  reconnecting restores the live suffix without duplicating overlapping
+  chunks. Attempt identity resets the preview on retries. Completed partial
+  records are removed. The committed assistant message retains up to 8,192
+  Unicode characters of readable reasoning in `meta.readable_reasoning`, so
+  attached views keep a compact tail before the reply, including after
+  reconnecting. This display metadata is stripped from model inputs. Older
+  hosts may not retain it. Historical journal commits may also retain live
+  reasoning like other session content. Tool progress is committed
+  at most every 100 ms plus once before the result.
 
 ## Host and protocol
 

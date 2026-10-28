@@ -23,7 +23,7 @@ You'll see one JSON object per line on stdout: a response acknowledging the prom
 
 ## Flags
 
-`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode; the embedding application owns persistence.
+`zot rpc` accepts the same flags as the other modes: `--provider`, `--model`, `--cwd`, `--api-key`, `--base-url`, `--system-prompt`, `--append-system-prompt`, `--reasoning`, `--show-reasoning`, `--max-steps`, `--no-tools`, `--tools`, `--no-context-files`. Sessions are disabled by default in RPC mode; the embedding application owns persistence.
 
 ## Extension system prompts
 
@@ -212,6 +212,7 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `user_message` | `content`, `time` | The submitted prompt as it was added to the transcript |
 | `assistant_start` | (none) | About to receive assistant streaming |
 | `text_delta` | `delta` | Partial assistant text. Concatenate to build the full reply |
+| `reasoning_delta` | `delta` | Optional readable reasoning or summary text, separate from answer text. Never contains encrypted reasoning or signatures |
 | `tool_call` | `id`, `name`, `args` | A model or nested orchestration call is about to run |
 | `tool_progress` | `id`, `text` | Optional progress line from the tool while it runs |
 | `tool_result` | `id`, `is_error`, `content` | Tool finished |
@@ -221,6 +222,8 @@ Stream notifications during a `prompt` or `compact`. None carry an `id`.
 | `done` | (none) | The whole prompt/compact completed (success or error) |
 | `error` | `message` | Non-fatal error message |
 | `compact_done` | `summary` | Compaction finished, summary text included |
+
+`reasoning_delta` is opt-in. Start `zot rpc --show-reasoning` or `zot --json --show-reasoning` to enable it. SDK callers use `sdk.Config{ShowReasoning: true}`. Opting in also requests readable summaries (`reasoning.summary: "auto"`) on Responses/Codex calls and `thinking.display: "summarized"` on native Anthropic calls with thinking enabled, without changing their configured effort. Newer Claude models otherwise omit readable thinking by default, even at high effort. Anthropic-compatible third-party providers are not sent the native display option. This requests summaries, not raw hidden reasoning, and a backend may still return none. Without explicit opt-in, the default event stream is unchanged. The saved interactive `show_reasoning` setting does not affect machine clients. Chunks are available for OpenAI-compatible `reasoning_content`, Anthropic thinking, Responses/Codex reasoning summaries, Gemini thought text, and Bedrock Converse reasoning text. Some backends provide only summaries or no readable reasoning. Reset a live preview on `assistant_start`, `assistant_message`, `turn_end`, or `done`. Opted-in calls also retain up to 8,192 Unicode characters of readable reasoning in assistant message `meta.readable_reasoning`. This additive display metadata is saved with sessions and committed assistant entries, stripped from subsequent model inputs, and shown by the interactive UI as a compact tail before the reply. It is stored-message metadata, not a new field in JSON/RPC notifications or SDK messages. Clients can retain their own reasoning display after completion rather than discarding it with the transient preview. Old messages may contain readable `ReasoningBlock` summaries instead. Reasoning is never concatenated into answer text. Bedrock signatures and redacted content remain opaque replay metadata in the completed message, not live deltas.
 
 With the optional [codemode tool](codemode.md), nested tool calls use the same events with IDs `<parent-id>/<number>`. Parallel calls can finish out of order. Their results are observable events, not separate model transcript messages. Only the outer script's output enters the transcript.
 

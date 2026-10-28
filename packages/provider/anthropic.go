@@ -168,6 +168,8 @@ type anthThinking struct {
 	// BudgetTokens is only sent for Type=="enabled". Adaptive models
 	// reject it (400), so it is omitted for them.
 	BudgetTokens int `json:"budget_tokens,omitempty"`
+	// Display explicitly opts in to readable summaries on newer Claude models.
+	Display string `json:"display,omitempty"`
 }
 
 // anthOutputConfig carries the effort knob used by adaptive-thinking
@@ -314,6 +316,12 @@ func (c *anthropicClient) buildRequest(req Request) (*anthRequest, error) {
 				}
 			}
 		}
+	}
+
+	// Newer Claude models default to omitted thinking text even with high
+	// effort. Do not send this Anthropic option to compatible third parties.
+	if req.StreamReasoning && c.Name() == "anthropic" && out.Thinking != nil {
+		out.Thinking.Display = "summarized"
 	}
 
 	for _, t := range activeToolDefinitions(req.Tools, req.Messages) {
@@ -727,6 +735,9 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 				case "text":
 					registerBlock(idx, "text")
 				case "thinking":
+					if block.Thinking != "" {
+						out <- EventReasoningDelta{Delta: block.Thinking}
+					}
 					if preserveThinking {
 						be := registerBlock(idx, "thinking")
 						be.textBuf.WriteString(block.Thinking)
@@ -760,6 +771,9 @@ func (c *anthropicClient) runStream(ctx context.Context, resp *http.Response, re
 						out <- EventToolArgs{ID: be.toolCall.ID, Delta: d.PartialJSON}
 					}
 				case "thinking_delta":
+					if d.Thinking != "" {
+						out <- EventReasoningDelta{Delta: d.Thinking}
+					}
 					if be, ok := blocks[idx]; ok && be.kind == "thinking" {
 						be.textBuf.WriteString(d.Thinking)
 					}

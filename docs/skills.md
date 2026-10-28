@@ -67,12 +67,41 @@ skill ecosystem works in zot unchanged. Drop your existing
 `.claude/skills/` or `.agents/skills/` directories into a project and
 zot will pick them up. When no frontmatter `name` is present, nested path
 components are lowercased and normalized to kebab-case and joined with `-`.
-Only files named exactly `SKILL.md` are read.
+Only files named exactly `SKILL.md` are read. Hidden entries such as `.trash`
+are skipped while descending into a source. An explicitly supplied source root
+may itself be hidden.
+
+### Excluding paths
+
+Set `skill_exclude` in `$ZOT_HOME/config.json` to omit files or directory trees:
+
+```json
+{
+  "skill_exclude": ["~/.claude/skills/synced"]
+}
+```
+
+Paths are literal, not glob patterns. `~`, `~/`, and `~\` expand to your home
+directory. Relative paths are resolved against the session working directory,
+including after `/cd`. Empty entries are ignored. Exclusions apply to ordinary
+and extension-provided filesystem skills, including explicitly supplied sources,
+the `/skills` picker, and pin resolution. Symlink aliases of excluded paths are
+also omitted. Built-in skills are unaffected. This is a discovery preference,
+not an access-control boundary.
+
+Excluding synced snapshots lets a lower-priority local copy of a skill win.
+Otherwise normal precedence remains unchanged, regardless of modification time.
+Restart zot to update the model's skill manifest after changing this setting.
+
+### Conflicts and linked directories
 
 Extensions namespace their skills, for example `git-tools:writing-git-commits`.
 Explicit `--ext` bundles take precedence over environment, project, global, and
 compatibility sources. Duplicate names from different files keep the
-higher-precedence file and report a diagnostic. Rediscovering the same file
+higher-precedence file and report a diagnostic. In interactive mode, persistent
+startup and reload diagnostics appear above the conversation so a long warning
+list cannot hide new replies. Scroll up to inspect them. `/new`, `/clear`, or a
+successful extension reload clears the stored diagnostics. Rediscovering the same file
 under the same skill name (including through a symlink) is silently ignored.
 Skill directories may themselves be symlinks, so a checkout can be kept in one
 place and linked into a skills directory. Real directories are scanned before
@@ -83,9 +112,13 @@ locations when running from your home directory. `--no-ext` omits implicit
 extension bundles. `--no-ext --ext PATH` loads only the explicitly named bundle.
 `--no-skill` disables all skills, including extension and built-in skills.
 
-When `XDG_STATE_HOME` is set on any platform, `$ZOT_HOME` defaults to
-`$XDG_STATE_HOME/zot`. Otherwise it defaults to `~/Library/Application Support/zot/`
+`$ZOT_HOME` here means zot's resolved state directory. The `ZOT_HOME`
+environment variable is an optional override and may be unset or empty.
+Without that override, zot uses `$XDG_STATE_HOME/zot` when `XDG_STATE_HOME`
+is set on any platform. Otherwise it uses `~/Library/Application Support/zot/`
 on macOS, `~/.local/state/zot` on Linux, or `%LOCALAPPDATA%\zot` on Windows.
+zot does not export the resolved path to your shell. Before using `$ZOT_HOME`
+in shell commands, [set it to your existing state directory](../README.md#credential-lookup-order).
 
 ## Inspecting installed skills
 

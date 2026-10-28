@@ -89,16 +89,14 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 	}()
 	entries := append([]Entry(nil), s.snapshot.Entries...)
 	last := s.snapshot.Revision
-	streamed := ""
+	var streamed partialStream
 	progress := map[string]string{}
 	restore := func(snap ConversationSnapshot) {
 		reset()
-		streamed = ""
+		streamed.reset()
 		progress = map[string]string{}
-		if p := snap.Partial; p != nil && !p.Final && p.Text != "" {
-			streamed = p.Text
-			sink(core.EvAssistantStart{})
-			sink(core.EvTextDelta{Delta: p.Text})
+		if p := snap.Partial; p != nil {
+			streamed.apply(*p, sink)
 		}
 	}
 	restore(s.snapshot)
@@ -168,26 +166,17 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 						sink(core.EvUserMessage{Message: userEntryMessage(e)})
 					}
 					if e.Type == entryAssistant {
-						streamed = ""
+						streamed.reset()
 					}
 					if e.Type == entryReset {
-						streamed = ""
+						streamed.reset()
 						reset()
 					}
 				}
 				ProjectEntryEvents(fresh, sink)
 			}
 			if p, ok := PartialFromCommit(cm, s.driver.ConversationID); ok && !p.Final && p.RunID != "" {
-				if !strings.HasPrefix(p.Text, streamed) {
-					streamed = ""
-				}
-				if delta := strings.TrimPrefix(p.Text, streamed); delta != "" {
-					if streamed == "" {
-						sink(core.EvAssistantStart{})
-					}
-					sink(core.EvTextDelta{Delta: delta})
-				}
-				streamed = p.Text
+				streamed.apply(p, sink)
 			}
 			for _, p := range ToolProgressFromCommit(cm, s.driver.ConversationID) {
 				prev := progress[p.CallID]
@@ -198,7 +187,7 @@ func (s *AttachedSession) Observe(ctx context.Context, sink func(core.AgentEvent
 			}
 			run, settled := RunFromCommit(cm, s.driver.ConversationID)
 			if settled && run.Phase == "done" {
-				streamed = ""
+				streamed.reset()
 				progress = map[string]string{}
 				if run.Outcome == "failed" || run.Outcome == "aborted" {
 					reset()

@@ -78,7 +78,10 @@ func (i *Interactive) handleMouseKey(k tui.Key) bool {
 		i.clearMouseSelection()
 		return false
 	}
-	if !i.cfg.TUIClickToPosition || i.dialogOwnsInput() {
+	wheel := k.Kind == tui.KeyMouseWheelUp || k.Kind == tui.KeyMouseWheelDown
+	// Side-chat output shares the normal transcript flow and scroll position.
+	// Other dialogs still consume mouse input without scrolling the transcript.
+	if !i.cfg.TUIClickToPosition || (i.dialogOwnsInput() && !(wheel && i.btwDialog.Active())) {
 		i.clearMouseSelection()
 		return true
 	}

@@ -249,6 +249,12 @@ Standard MCP config — same as Claude Desktop, with zot-specific extensions:
       "headers": {
         "User-Agent": "zot-mcp-bridge"
       }
+    },
+
+    // deed.page static site publishing (streamable-http, keyless)
+    "deedpage": {
+      "transport": "streamable-http",
+      "url": "https://deed.page/mcp"
     }
   }
 }
@@ -350,6 +356,32 @@ the [skill directories](../../../docs/skills.md):
 mkdir -p ~/.agents/skills/cohesivity
 curl -fsSL https://cohesivity.ai/skill.md -o ~/.agents/skills/cohesivity/SKILL.md
 ```
+
+### deed.page template
+
+`/mcp setup add deedpage` registers the keyless
+[deed.page](https://deed.page/docs) MCP server, which publishes HTML or a small
+static site the agent built to a permanent public URL at
+`https://<slug>.deed.page/`. Publishing needs no account or API key, and the
+template writes no credential or header. Free sites are public, so do not
+publish secrets.
+
+The first `publish_site` call returns an owner token once. Save it in private,
+durable storage, such as `~/.config/deed-page/token` (directory mode `0700`,
+file mode `0600` on Unix), and load it for later sessions. The bridge does not
+save this token automatically. Never put it in published files, a repository,
+or logs. Without a recovery email, losing the token permanently removes your
+ability to manage those sites, even though they remain online.
+
+The model passes the token as the `token` argument to `update_site`,
+`list_sites`, `delete_site`, `list_versions`, and `restore_version`.
+`get_site` needs no token. Run zot with
+`--no-yolo` to approve each publish, update, or delete.
+
+The model reaches these tools through `mcp__search_tools`. For agents that
+should publish with plain `curl` instead, the
+[deed.page agent skill](https://github.com/f-o-x11/deed-page-skill) can be
+installed into one of the [skill directories](../../../docs/skills.md).
 
 ## How It Works
 

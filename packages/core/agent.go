@@ -132,9 +132,10 @@ type Agent struct {
 	startGeneration                                  uint64
 	startBase, startSystem, startModel, startSession string
 
-	mu        sync.Mutex
-	messages  []provider.Message
-	toolState map[string]json.RawMessage
+	streamReasoning bool // request readable summaries independently of effort
+	mu              sync.Mutex
+	messages        []provider.Message
+	toolState       map[string]json.RawMessage
 	// rev increments whenever the transcript slice is replaced or a
 	// message is appended. The TUI uses it as a cheap redraw cache key
 	// so editor-only typing doesn't copy/rebuild a long transcript on
@@ -318,6 +319,15 @@ func (a *Agent) hasTool(name string) bool {
 	defer a.mu.Unlock()
 	_, err := a.Tools.Get(name)
 	return err == nil
+}
+
+// SetStreamReasoning requests readable reasoning for subsequent model calls.
+// It is safe to change while a call is streaming, but cannot change a request
+// that has already been sent.
+func (a *Agent) SetStreamReasoning(enabled bool) {
+	a.mu.Lock()
+	a.streamReasoning = enabled
+	a.mu.Unlock()
 }
 
 // SetMessages replaces the transcript (used when resuming a session).
@@ -766,13 +776,14 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 			// next in-process request is rejected by providers like Anthropic
 			// with "tool_use ids were found without tool_result blocks". The
 			// repair is pure and a no-op on already-valid transcripts.
-			Messages:     repairToolUseResultPairs(withoutToolDisplay(a.messages)),
-			Tools:        a.Tools.Specs(),
-			Reasoning:    a.Reasoning,
-			MaxTokens:    a.MaxTokens,
-			Temperature:  a.Temperature,
-			SessionID:    a.SessionID,
-			MaxToolCalls: a.MaxToolCalls,
+			Messages:        repairToolUseResultPairs(withoutToolDisplay(a.messages)),
+			Tools:           a.Tools.Specs(),
+			Reasoning:       a.Reasoning,
+			StreamReasoning: a.streamReasoning,
+			MaxTokens:       a.MaxTokens,
+			Temperature:     a.Temperature,
+			SessionID:       a.SessionID,
+			MaxToolCalls:    a.MaxToolCalls,
 		}
 		a.mu.Unlock()
 		break
@@ -785,9 +796,10 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 	sink(EvAssistantStart{})
 
 	var (
-		stop     provider.StopReason
-		finalErr error
-		finalMsg provider.Message
+		stop          provider.StopReason
+		finalErr      error
+		finalMsg      provider.Message
+		reasoningTail []rune
 	)
 
 	for ev := range stream {
@@ -796,6 +808,24 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 			// nothing
 		case provider.EventTextDelta:
 			sink(EvTextDelta{Delta: e.Delta})
+		case provider.EventReasoningDelta:
+			if req.StreamReasoning {
+				// Keep only the compact display tail, independently of opaque
+				// replay blocks and without adding anything to model content.
+				const maxReasoningRunes = 8192
+				for _, r := range e.Delta {
+					reasoningTail = append(reasoningTail, r)
+					if len(reasoningTail) == 2*maxReasoningRunes {
+						copy(reasoningTail, reasoningTail[maxReasoningRunes:])
+						reasoningTail = reasoningTail[:maxReasoningRunes]
+					}
+				}
+				if len(reasoningTail) > maxReasoningRunes {
+					copy(reasoningTail, reasoningTail[len(reasoningTail)-maxReasoningRunes:])
+					reasoningTail = reasoningTail[:maxReasoningRunes]
+				}
+			}
+			sink(EvReasoningDelta{Delta: e.Delta})
 		case provider.EventToolStart:
 			sink(EvToolUseStart{ID: e.ID, Name: e.Name})
 		case provider.EventToolArgs:
@@ -836,6 +866,14 @@ func (a *Agent) oneTurn(ctx context.Context, sink func(AgentEvent)) (provider.St
 		}
 	}
 	if keep {
+		if len(reasoningTail) > 0 {
+			meta := make(map[string]string, len(finalMsg.Meta)+1)
+			for key, value := range finalMsg.Meta {
+				meta[key] = value
+			}
+			meta[provider.ReadableReasoningMetaKey] = string(reasoningTail)
+			finalMsg.Meta = meta
+		}
 		emit := finalMsg
 		suppress := false
 

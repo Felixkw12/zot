@@ -383,6 +383,7 @@ func TestNativePartialIsFencedAndReplaced(t *testing.T) {
 	gate := newEventGate(func(ev core.AgentEvent) { leaked = append(leaked, ev) })
 	p := &taskPartial{tc: TaskContext{inv: &taskInvocation{s: h.sched, task: Task{ID: "missing", Invocation: "x"}}}, base: Partial{ConversationID: c.ID, RunID: "r", Turn: 1, Attempt: 1}, gate: gate}
 	p.add("stale", core.EvTextDelta{Delta: "stale"})
+	p.addReasoning("stale reasoning", core.EvReasoningDelta{Delta: "stale reasoning"})
 	p.flush()
 	if _, ok, _ := h.r.Partial(ctx, c.ID); ok {
 		t.Fatal("stale partial committed")

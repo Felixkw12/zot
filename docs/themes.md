@@ -8,6 +8,12 @@ terminal background.
 
 ## Where themes live
 
+`$ZOT_HOME` below means zot's resolved state directory. The `ZOT_HOME`
+environment variable is an optional override and may be unset or empty.
+zot resolves the default internally without exporting it to your shell.
+Before using `$ZOT_HOME` in shell commands,
+[set it to your existing state directory](../README.md#credential-lookup-order).
+
 User themes are discovered from:
 
 ```text

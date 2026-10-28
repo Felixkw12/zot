@@ -27,7 +27,7 @@ const (
 // ReadTool reads file contents from disk.
 type ReadTool struct {
 	CWD     string
-	Sandbox *Sandbox // when jailed, confines reads to the sandbox root
+	Sandbox *Sandbox // when jailed, confines reads to the sandbox and read-only roots
 }
 
 type readArgs struct {

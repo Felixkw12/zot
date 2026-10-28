@@ -67,6 +67,9 @@ type Config struct {
 	// ("minimum", "low", "medium", "high", "xhigh", "max"). Empty disables it.
 	Reasoning string
 
+	// ShowReasoning opts in to reasoning_delta events. Off by default.
+	ShowReasoning bool
+
 	// Temperature sets the sampling temperature. Nil = provider default.
 	Temperature *float32
 
@@ -98,11 +101,12 @@ type Config struct {
 // Runtime is one zot agent session. Safe for use from one goroutine
 // at a time per Runtime; create separate Runtimes for parallel work.
 type Runtime struct {
-	mu       sync.Mutex
-	agent    *core.Agent
-	provider string
-	model    string
-	cwd      string
+	mu            sync.Mutex
+	agent         *core.Agent
+	provider      string
+	model         string
+	cwd           string
+	showReasoning bool
 
 	// activeCancel is set while a Prompt is streaming.
 	activeCancel context.CancelFunc
@@ -127,10 +131,11 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	ag := r.NewAgent()
 	return &Runtime{
-		agent:    ag,
-		provider: r.Provider,
-		model:    r.Model,
-		cwd:      r.CWD,
+		agent:         ag,
+		provider:      r.Provider,
+		model:         r.Model,
+		cwd:           r.CWD,
+		showReasoning: cfg.ShowReasoning,
 	}, nil
 }
 
@@ -248,7 +253,11 @@ func (r *Runtime) Prompt(ctx context.Context, text string, images []Image) (<-ch
 			r.activeCancel = nil
 			r.mu.Unlock()
 		}()
+		r.agent.SetStreamReasoning(r.showReasoning)
 		err := r.agent.Prompt(subCtx, text, imgBlocks, func(ev core.AgentEvent) {
+			if _, ok := ev.(core.EvReasoningDelta); ok && !r.showReasoning {
+				return
+			}
 			out <- toEvent(ev)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
