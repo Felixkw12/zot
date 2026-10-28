@@ -414,11 +414,28 @@ func renderBtwConfirmation(th tui.Theme, width int, btw *btwDialog, confirm *con
 func (d *btwDialog) Render(th tui.Theme, width int) []string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.active {
-		return nil
-	}
+	rows, _, _, _ := d.renderLocked(th, width)
+	return rows
+}
 
-	var out []string
+// RenderFlow separates the unbounded conversation from the fixed editor band.
+// The conversation joins the main terminal flow, not the main agent transcript.
+func (d *btwDialog) RenderFlow(th tui.Theme, width int) (chat, bottom []string, row, col int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows, split, row, col := d.renderLocked(th, width)
+	if row >= 0 {
+		row -= split
+	}
+	return rows[:split], rows[split:], row, col
+}
+
+// Caller holds d.mu. Cursor coordinates refer to the complete panel.
+func (d *btwDialog) renderLocked(th tui.Theme, width int) (out []string, split, row, col int) {
+	if !d.active {
+		return nil, 0, -1, -1
+	}
+	row, col = -1, -1
 	out = append(out, frameHeaderColor(th, "btw - side chat (esc closes; nothing is added to the main thread)", width, th.Accent))
 
 	if len(d.turns) == 0 && !d.loading {
@@ -458,6 +475,12 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		out = append(out, "  "+prefix+"  "+th.FG256(th.Muted, "(esc cancels)"))
 	}
 
+	// Normalize the frame before splitting so cursor coordinates match both
+	// the complete panel and its terminal-flow representation.
+	if len(out) > 1 && strings.TrimSpace(stripANSIBytes(out[1])) != "" {
+		out = append(out[:1], append([]string{""}, out[1:]...)...)
+	}
+	bodyEnd := len(out)
 	out = append(out, "")
 	out = append(out, d.inputPrefixRows(th, width)...)
 	if d.editor != nil {
@@ -468,7 +491,8 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		if d.lineInput {
 			d.editor.Prompt = ""
 		}
-		edLines, _, _ := d.editor.Render(width - 2)
+		edLines, eRow, eCol := d.editor.Render(width - 2)
+		row, col = len(out)+eRow, eCol+2
 		for _, l := range edLines {
 			// Indent the editor body so it lines up with the side-chat
 			// content column. Editor's prompt already includes a left
@@ -478,7 +502,7 @@ func (d *btwDialog) Render(th tui.Theme, width int) []string {
 		out = append(out, "") // breathing room between editor and frame rule
 	}
 	out = append(out, frameRuleColor(th, width, th.Accent))
-	return out
+	return out, bodyEnd, row, col
 }
 
 // inputPrefixRows is shared by rendering and cursor layout so a picker or
@@ -502,50 +526,8 @@ func (d *btwDialog) inputPrefixRows(th tui.Theme, width int) []string {
 func (d *btwDialog) CursorPos(width int) (row, col int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.active || d.editor == nil {
-		return -1, -1
-	}
-	// Reproduce render's structure to find where the editor sits.
-	// Note: the parent (interactive.go) wraps every dialog with
-	// padDialogFrame. It only injects a blank row after the frame
-	// header when Render did not already put one there. With existing
-	// turns or a loading spinner, Render's first body row is already
-	// blank, so counting an extra pad row would place the cursor one
-	// row too low.
-	editorOffset := 1 // header
-	if len(d.turns) == 0 && !d.loading {
-		editorOffset++ // padDialogFrame's post-header blank
-		editorOffset++ // muted "ask anything..." line
-	}
-	for _, t := range d.turns {
-		editorOffset++ // blank
-		editorOffset += len(btwUserBubbleRows(d.theme, t.User, width-2, d.compactMode))
-		if len(t.Tools) > 0 {
-			editorOffset++ // main transcript's user-to-tool separator
-		}
-		for _, tool := range t.Tools {
-			editorOffset += len(d.toolView.RenderToolCall(tool, width))
-		}
-		if t.Assistant != "" {
-			editorOffset++ // blank
-			editorOffset += len(renderDialogMarkdownRows(t.Assistant, d.theme, width))
-		}
-		if t.Err != "" {
-			editorOffset += len(wrapDialogTextRows(d.theme.FG256(d.theme.Error, "✖ "+t.Err), width))
-		}
-	}
-	if d.loading {
-		editorOffset++ // blank
-		editorOffset++ // spinner line
-	}
-	editorOffset++ // pre-editor blank
-	editorOffset += len(d.inputPrefixRows(d.theme, width))
-	d.editor.Prompt = d.theme.AccentBar(d.theme.Accent)
-	if d.lineInput {
-		d.editor.Prompt = ""
-	}
-	_, eRow, eCol := d.editor.Render(width - 2)
-	return editorOffset + eRow, eCol + 2 /* matches render indent */
+	_, _, row, col = d.renderLocked(d.theme, width)
+	return row, col
 }
 
 // btwUserBubbleRows renders a user message inside the /btw dialog

@@ -1343,6 +1343,14 @@ func (i *Interactive) chatPage() int {
 	return p
 }
 
+func (i *Interactive) scrollPage(k tui.Key) {
+	delta := i.chatPage()
+	if k.Kind == tui.KeyPageDown {
+		delta = -delta
+	}
+	i.scrollBy(delta)
+}
+
 // scrollBy adjusts the scroll offset. Positive = up (into history).
 // Clearing the parked-turn label when we're back at the bottom means
 // the "viewing turn N" footer goes away automatically as soon as you
@@ -1424,6 +1432,9 @@ func (i *Interactive) redraw() {
 
 	// Dialogs (login or model picker) render between chat and the editor.
 	var dialog []string
+	btwVisible := false
+	var sideChat []string
+	btwCursorRow, btwCursorCol := -1, -1
 	switch {
 	case i.dialog.Active():
 		dialog = i.dialog.Render(i.cfg.Theme, cols)
@@ -1456,12 +1467,12 @@ func (i *Interactive) redraw() {
 			// Keep the side-chat transcript and its live tool preview visible
 			// above confirmation, matching how the main transcript remains
 			// visible while --no-yolo waits for a decision.
-			dialog = renderBtwConfirmation(i.cfg.Theme, cols, i.btwDialog, i.confirmDialog)
+			btwVisible = true
 		} else {
 			dialog = i.confirmDialog.Render(i.cfg.Theme, cols)
 		}
 	case i.btwDialog.Active():
-		dialog = i.btwDialog.Render(i.cfg.Theme, cols)
+		btwVisible = true
 	case i.skillsDialog.Active():
 		dialog = i.skillsDialog.Render(i.cfg.Theme, cols)
 	case i.logoutDialog.Active():
@@ -1488,6 +1499,17 @@ func (i *Interactive) redraw() {
 		dialog = i.sessionOpsDialog.Render(i.cfg.Theme, cols)
 	case i.sessionTreeDialog.Active():
 		dialog = i.sessionTreeDialog.Render(i.cfg.Theme, cols)
+	}
+	if btwVisible {
+		sideChat, dialog, btwCursorRow, btwCursorCol = i.btwDialog.RenderFlow(i.cfg.Theme, cols)
+		// Do not append into the cached main transcript's backing array.
+		flow := append([]string(nil), chat...)
+		flow = append(flow, "")
+		chat = append(flow, sideChat...)
+		if i.confirmDialog.Active() {
+			dialog = append(dialog, "")
+			dialog = append(dialog, padDialogFrame(i.confirmDialog.Render(i.cfg.Theme, cols))...)
+		}
 	}
 	if len(dialog) > 0 {
 		dialog = padDialogFrame(dialog)
@@ -1813,6 +1835,11 @@ func (i *Interactive) redraw() {
 		for len(chat) > 0 && strings.TrimSpace(chat[len(chat)-1]) == "" {
 			chat = chat[:len(chat)-1]
 		}
+		if btwVisible {
+			flow := append([]string(nil), chat...)
+			flow = append(flow, "")
+			chat = append(flow, sideChat...)
+		}
 		// Newly-revealed rows are older messages prepended at the top.
 		// scrollOffset counts rows from the bottom, so to keep the
 		// viewport visually anchored on the same content the user was
@@ -1909,11 +1936,9 @@ func (i *Interactive) redraw() {
 	}
 	cursorRow := inputStartRow + inputCursorOffset + curR
 	cursorCol := curC + inputCursorColOffset
-	if i.btwDialog.Active() {
-		if r, c := i.btwDialog.CursorPos(cols); r >= 0 {
-			cursorRow = dialogLead + r
-			cursorCol = c
-		}
+	if btwVisible && btwCursorRow >= 0 {
+		cursorRow = dialogLead + btwCursorRow
+		cursorCol = btwCursorCol
 	}
 	if i.dialog.Active() {
 		if r, c := i.dialog.CursorPos(cols); r >= 0 {
@@ -2358,6 +2383,10 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	// focus to the main editor without answering the pending request, so
 	// slash commands and the dialogs they open can run first.
 	if i.confirmDialog.Focused() {
+		if i.btwDialog.Active() && (k.Kind == tui.KeyPageUp || k.Kind == tui.KeyPageDown) {
+			i.scrollPage(k)
+			return false
+		}
 		if k.Kind == tui.KeyRune && k.Rune == '/' {
 			i.confirmDialog.Blur()
 			i.ed.Insert("/")
@@ -2622,14 +2651,20 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	if i.btwDialog.Active() {
 		if k.Kind == tui.KeyCtrlC {
 			i.btwDialog.Close()
-			i.invalidate()
+			i.scrollToBottom()
 			return false
 		}
 		if k.Kind == tui.KeyCtrlO {
 			i.toggleBtwToolExpansion()
 			return false
 		}
-		i.btwDialog.HandleKey(k, i.invalidate)
+		if k.Kind == tui.KeyPageUp || k.Kind == tui.KeyPageDown {
+			i.scrollPage(k)
+			return false
+		}
+		if i.btwDialog.HandleKey(k, i.invalidate) {
+			i.scrollToBottom()
+		}
 		return false
 	}
 	if i.skillsDialog.Active() {
@@ -2784,11 +2819,8 @@ func (i *Interactive) handleKey(ctx context.Context, k tui.Key) (done bool) {
 	case tui.KeyCtrlO:
 		i.toggleToolExpansion()
 		return false
-	case tui.KeyPageUp:
-		i.scrollBy(+i.chatPage())
-		return false
-	case tui.KeyPageDown:
-		i.scrollBy(-i.chatPage())
+	case tui.KeyPageUp, tui.KeyPageDown:
+		i.scrollPage(k)
 		return false
 	case tui.KeyUp:
 		// Alt/Option+Up: pop the most recently queued ("sliding in")
@@ -5546,7 +5578,7 @@ func (i *Interactive) openBtwDialog(args []string) {
 	i.btwDialog.fileContext = i.runCtx
 	i.btwDialog.mu.Unlock()
 	i.btwDialog.Open(i.cfg.Theme, i.agent, i.agent.System, i.cfg.Model, i.cfg.CWD, seed, i.compactModeEnabled(), i.cfg.FlatTools, tui.NormalizeInputStyle(i.cfg.TUIInputStyle) == tui.InputStyleLines, i.invalidate)
-	i.invalidate()
+	i.scrollToBottom()
 }
 
 // submitOrQueuePrompt submits a slash command's expanded prompt immediately,

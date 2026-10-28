@@ -112,9 +112,13 @@ locations when running from your home directory. `--no-ext` omits implicit
 extension bundles. `--no-ext --ext PATH` loads only the explicitly named bundle.
 `--no-skill` disables all skills, including extension and built-in skills.
 
-When `XDG_STATE_HOME` is set on any platform, `$ZOT_HOME` defaults to
-`$XDG_STATE_HOME/zot`. Otherwise it defaults to `~/Library/Application Support/zot/`
+`$ZOT_HOME` here means zot's resolved state directory. The `ZOT_HOME`
+environment variable is an optional override and may be unset or empty.
+Without that override, zot uses `$XDG_STATE_HOME/zot` when `XDG_STATE_HOME`
+is set on any platform. Otherwise it uses `~/Library/Application Support/zot/`
 on macOS, `~/.local/state/zot` on Linux, or `%LOCALAPPDATA%\zot` on Windows.
+zot does not export the resolved path to your shell. Before using `$ZOT_HOME`
+in shell commands, [set it to your existing state directory](../README.md#credential-lookup-order).
 
 ## Inspecting installed skills
 

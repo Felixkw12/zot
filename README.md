@@ -82,11 +82,28 @@ The easiest way is to just run `zot` and type `/login`. The TUI opens even witho
 2. provider-specific env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `XAI_API_KEY`, `CEREBRAS_API_KEY`, `TOGETHER_API_KEY`, `HF_TOKEN`, `ZAI_API_KEY`, `XIAOMI_API_KEY`, `MINIMAX_API_KEY`, `FIREWORKS_API_KEY`, `AI_GATEWAY_API_KEY`, `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_TOKEN`, and others for provider-specific backends)
 3. `$ZOT_HOME/auth.json` (API key or OAuth token; mode 0600)
 
-`$ZOT_HOME` defaults to:
+`ZOT_HOME` is an optional environment variable that overrides zot's state directory.
+When it is unset or empty, zot resolves the directory internally:
 - All platforms: `$XDG_STATE_HOME/zot` when `XDG_STATE_HOME` is set
 - macOS fallback: `~/Library/Application Support/zot`
 - Linux fallback: `~/.local/state/zot`
 - Windows fallback: `%LOCALAPPDATA%\zot`
+
+zot does not populate `ZOT_HOME` in your shell. An empty `echo "$ZOT_HOME"`
+is normal and does not mean configuration is missing. Throughout these docs,
+`$ZOT_HOME` is shorthand for the resolved state directory, not a guarantee that
+the environment variable is set.
+
+Before using `$ZOT_HOME` in shell commands, set it to your existing state
+directory. For example, on Linux with the default location:
+
+```sh
+export ZOT_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/zot"
+```
+
+To make that variable available in future shells, add the export to your shell's
+startup file. This is optional for running zot. If you already use a custom state
+directory, use that path instead to avoid switching to a different configuration.
 
 ### API keys from commands
 
@@ -445,7 +462,11 @@ Each question runs an isolated agent turn against `system + main transcript + si
 /btw does PUT replace the whole resource?
 ```
 
-Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately. Use `@` for file references or `!@` to include text file content or supported images. Escape closes an active file picker before cancelling or closing the chat. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
+Inside the overlay: `enter` sends, `esc` cancels an in-flight call (or closes the overlay if idle), `ctrl+c` closes immediately.
+
+The side-chat conversation grows in the same terminal flow as the main chat, without a separate viewport or height limit. Use your terminal's normal scrollback to read earlier output, no mouse setting is required. `pgup` and `pgdn` browse the combined main and side-chat history. If **TUI settings > click to position cursor** is enabled, the mouse wheel browses that same combined history instead of native terminal scrollback. Scrolling also works while a tool confirmation is pending, without answering it. The shared display does not add side-chat exchanges to the main model context or saved transcript.
+
+Use `@` for file references or `!@` to include text file content or supported images. Escape closes an active file picker before cancelling or closing the chat. Side-chat exchanges never touch the transcript and aren't persisted to the session file.
 
 ### `/swarm`
 
@@ -524,7 +545,7 @@ Opens a dialog with every persistent setting. `up`/`down` to navigate, `enter` o
 - **show reasoning**: off by default. Shows the latest three wrapped lines of readable reasoning in a compact live preview, updated without answer-text pacing. After completion, the same compact tail remains before the assistant reply. Enable in `/settings`, pass `--show-reasoning`, or set `"show_reasoning": true` in `config.json`. Changes apply immediately and persist. Enabling mid-turn displays subsequent available chunks. Enabling also requests `reasoning.summary: "auto"` on Responses/Codex calls and `thinking.display: "summarized"` on native Anthropic calls with thinking enabled, starting with the next model call and without changing effort. Newer Claude models default to omitting readable thinking even at high effort, so the explicit display request is necessary. An already-running request that did not ask for summaries may remain silent until the next call. Each opted-in model call retains at most 8,192 Unicode characters of readable reasoning as display-only metadata on its assistant message. The tail is saved with the session and restored on resume. Disabling the setting hides both live and saved reasoning without deleting saved tails. This is separate from `/reasoning`, which controls effort. Supported streams are OpenAI-compatible `reasoning_content`, Anthropic thinking, Responses/Codex reasoning summaries, Gemini thought text, and Bedrock Converse reasoning text. Providers may expose only summaries or no readable reasoning at all, especially for simple prompts. The live preview is replaced by the saved tail when the completed reply enters the transcript. Failed or cancelled calls retain a tail only if their partial assistant message is kept. For a useful test, set `/reasoning` to `high` and ask a multi-step problem while watching the response. Continuous-host attached views also show the committed live reasoning tail and restore it on reconnect. Saved tails do not add transcript messages or model context. Older sessions show readable replay summaries when available. Sessions that did not retain readable reasoning cannot reconstruct it. Bedrock signatures and redacted blocks are retained only as replay metadata, never displayed. Plain-text output remains unchanged. JSON/RPC streams require an explicit `--show-reasoning` flag and SDK streams require `sdk.Config{ShowReasoning: true}` to emit `reasoning_delta` events. The saved interactive preference does not opt machine clients in, preserving their default event streams.
 - **show loaded resources at startup**: list the active .zot agent (for `zot run`), loaded `AGENTS.md` paths, extensions, and user-installed skills in compact sections above the transcript. Built-in skills are omitted. Off by default. Changes apply immediately and persist to `config.json` as `show_instructions_at_startup`.
 - **TUI settings**: opens a sub-view for input layout and status placement. **Input style** can be `plain` (default prompt line), `lines` (separator lines above and below the input), or `block` (a user-bubble-style input block). **Status position** places model, usage, and working-directory information above or below the input. **Working spinner position** places the busy spinner above or below the input. Changes apply immediately and persist to `config.json` as `tui_input_style`, `tui_status_position`, and `tui_working_position` (`above_input` or `below_input` for the position fields).
-- **TUI settings > click to position cursor**: off by default, saved as `tui_click_to_position`, and applied immediately. A stationary left click in the main input positions its cursor, including wrapped lines and Unicode text. Click-drag selects visible chat or input text without moving the editor cursor. Selected text stays highlighted after release and is not copied automatically. Press `ctrl+c` to copy explicitly without clearing the selection. `ctrl+shift+c` or `cmd+c` also works if your terminal forwards the chord to zot instead of consuming it. Display updates pause until the selection is dismissed so streaming cannot move the selected text, but the agent continues working. Press `esc` to dismiss the selection without cancelling a running turn. A new click, typing, scrolling, resizing, or disabling the setting also clears it. The wheel browses zot's transcript. Mouse input is ignored while a dialog owns input. Requires SGR button-motion reporting, supported by terminals such as Windows Terminal, iTerm2, Ghostty, and VS Code's integrated terminal on their supported operating systems.
+- **TUI settings > click to position cursor**: off by default, saved as `tui_click_to_position`, and applied immediately. A stationary left click in the main input positions its cursor, including wrapped lines and Unicode text. Click-drag selects visible chat or input text without moving the editor cursor. Selected text stays highlighted after release and is not copied automatically. Press `ctrl+c` to copy explicitly without clearing the selection. `ctrl+shift+c` or `cmd+c` also works if your terminal forwards the chord to zot instead of consuming it. Display updates pause until the selection is dismissed so streaming cannot move the selected text, but the agent continues working. Press `esc` to dismiss the selection without cancelling a running turn. A new click, typing, scrolling, resizing, or disabling the setting also clears it. The wheel browses zot's transcript, including the displayed side-chat conversation while `/btw` is open. Other mouse input is ignored while a dialog owns input. Requires SGR button-motion reporting, supported by terminals such as Windows Terminal, iTerm2, Ghostty, and VS Code's integrated terminal on their supported operating systems.
 
   Clipboard copy uses `pbcopy` on macOS, PowerShell on Windows, or `wl-copy`, `xclip`, or `xsel` on Linux. Over SSH, or when local copying fails, zot sends an OSC 52 clipboard request instead. Your terminal or multiplexer must allow it, and zot cannot verify that request succeeded. Selection is limited to the current visible text, excludes inline images, and copies displayed line breaks rather than reconstructing unwrapped source text. Dragging does not auto-scroll or support word selection by double-click. This is zot-managed selection, not native terminal selection. Many terminals still allow Shift-drag for native selection, including scrollback, but the bypass depends on the terminal. Disable the setting to restore all native mouse behavior.
 - **reasoning level**: choose reasoning for supported models: off, minimum, low, medium, high, xhigh, or max. The `max` tier is opt-in and sent natively to GPT-5.6 and adaptive-thinking Claude models; unsupported backends clamp it to their highest accepted effort. The change is persisted to `config.json` and applied to the next model call. Use `/reasoning` to open this selector directly. The selector only shows distinct levels supported by the active model; models without reasoning support only offer `off`.
