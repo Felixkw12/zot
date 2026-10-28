@@ -96,18 +96,18 @@ func TestBtwSharesMainFlowWithoutMouseReporting(t *testing.T) {
 	}
 }
 
-func TestBtwWheelAndConfirmationShareHistory(t *testing.T) {
+func TestBtwNativeWheelAndConfirmationHistory(t *testing.T) {
 	i := NewInteractive(InteractiveConfig{Terminal: &cleanupTestTerminal{}, Theme: tui.Dark, TUIClickToPosition: true})
 	i.rend.Resize(80, 24)
 	i.btwDialog = scrollTestBtw()
 	i.redraw()
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyMouseWheelUp})
-	if i.scrollOffset != 3 {
-		t.Fatal("wheel did not use the shared transcript scroll position")
+	if i.scrollOffset != 0 {
+		t.Fatal("wheel intercepted native terminal scrollback")
 	}
 	i.handleKey(context.Background(), tui.Key{Kind: tui.KeyMouseWheelDown})
 	if i.scrollOffset != 0 {
-		t.Fatal("wheel down did not return to tail")
+		t.Fatal("wheel down changed application history")
 	}
 	resp := make(chan core.ConfirmDecision, 1)
 	i.confirmDialog.Enqueue(&confirmRequest{toolName: "bash", resp: resp})

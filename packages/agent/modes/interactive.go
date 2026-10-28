@@ -134,7 +134,8 @@ type InteractiveConfig struct {
 	ChatTimestampDate            string
 
 	// TUIInputStyle controls the main input rendering: plain or lines.
-	TUIInputStyle      string
+	TUIInputStyle string
+	// Deprecated: ignored to preserve native terminal scrolling and selection.
 	TUIClickToPosition bool
 
 	// TUIStatusPosition controls whether the status block renders above
@@ -452,13 +453,10 @@ type autoCompactThresholdSettingsStore interface {
 }
 
 type Interactive struct {
-	cfg            InteractiveConfig
-	view           *tui.View
-	ed             *tui.Editor
-	rend           *tui.Renderer
-	inputMouseTop  int
-	inputMouseLeft int
-	inputMouseRows int
+	cfg  InteractiveConfig
+	view *tui.View
+	ed   *tui.Editor
+	rend *tui.Renderer
 
 	mu        sync.Mutex
 	agent     *core.Agent
@@ -842,10 +840,9 @@ func (i *Interactive) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Mouse reporting is opt-in because it intercepts native selection.
-	if i.cfg.TUIClickToPosition {
-		_, _ = term.Write([]byte(tui.SeqMouseOn))
-	}
+	// Always leave scrolling and selection to the terminal, including when
+	// an older configuration still enables click-to-position.
+	_, _ = term.Write([]byte(tui.SeqMouseOff))
 	// Keep the live log on the terminal's main screen. Only explicit
 	// history browsing uses the alternate screen. The renderer emits
 	// chat as normal terminal flow/scrollback and redraws only the live
@@ -864,7 +861,6 @@ func (i *Interactive) Run(ctx context.Context) error {
 	// still be able to review the session after closing zot.
 	defer term.Write([]byte(tui.SeqMouseOff + tui.SeqResetScrollRegion + tui.SeqDeleteKittyImages + tui.SeqEnhancedKeyboardOff + tui.SeqBracketedPasteOff + tui.ResetCursorColor() + tui.ResetCursorShape() + tui.SeqClearScreenNoHome + tui.SeqShowCursor))
 	defer i.rend.CloseHistory()
-	defer i.clearMouseSelection()
 	defer i.startProgramStatus()()
 	i.applyInputCursorColor()
 
@@ -1425,10 +1421,6 @@ func (i *Interactive) redraw() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.syncProgramStatusLocked()
-	if i.rend.MouseSelectionActive() {
-		return
-	}
-
 	cols, _ := i.cfg.Terminal.Size()
 	chat := i.cachedChatLocked(cols)
 
@@ -1649,7 +1641,6 @@ func (i *Interactive) redraw() {
 		i.ed.Prompt = i.cfg.Theme.AccentBar(i.cfg.Theme.Accent)
 	}
 	edLines, curR, curC := i.ed.Render(cols)
-	inputRows := len(edLines)
 	var workingLines []string
 	if busyPrefix != "" && !workingWithStatus {
 		workingLines = []string{"  " + busyPrefix}
@@ -2001,12 +1992,6 @@ func (i *Interactive) redraw() {
 		i.rend.DrawHistory(visibleChat, bottom, cursorRow, cursorCol)
 	} else {
 		i.rend.DrawLog(chat, bottom, cursorRow, cursorCol)
-	}
-	i.inputMouseRows = 0
-	if inputStartRow >= 0 && !i.dialogOwnsInput() {
-		i.inputMouseTop = i.rend.BottomScreenRow(inputStartRow + inputCursorOffset)
-		i.inputMouseLeft = inputCursorColOffset
-		i.inputMouseRows = inputRows
 	}
 }
 
@@ -3943,12 +3928,6 @@ func (i *Interactive) openSettingsDialog() {
 			desc:  "choose input chrome and where status information appears",
 			children: []settingsItem{
 				{
-					key:   "tui_click_to_position",
-					label: "click to position cursor",
-					desc:  "click in the main input, or drag visible text to select. Ctrl+C copies the selection",
-					value: i.cfg.TUIClickToPosition,
-				},
-				{
 					key:     "tui_input_style",
 					label:   "input style",
 					desc:    "choose between the plain prompt, lines, and a block input area",
@@ -4212,10 +4191,6 @@ func (i *Interactive) refreshQuickModelSettingsItem(slot int) {
 func (i *Interactive) applySettingToggle(key string, value bool) {
 	if key == "show_reasoning" {
 		i.applyShowReasoning(value)
-		return
-	}
-	if key == "tui_click_to_position" {
-		i.applyClickToPosition(value)
 		return
 	}
 	if key == "chat_timestamps" {
