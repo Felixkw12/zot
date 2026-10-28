@@ -218,13 +218,29 @@ func TestStdioCWDEnvironmentAndCleanup(t *testing.T) {
 	if errs := m.Reload(context.Background()); len(errs) > 0 {
 		t.Fatal(errs)
 	}
-	canonicalProject, err := filepath.EvalSymlinks(project)
+	result, err := registry(m)["mcp__local__repo_lookup"].Execute(context.Background(), json.RawMessage(`{}`), nil)
+	if err != nil || result.IsError || len(result.Content) != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	text, ok := result.Content[0].(provider.TextBlock)
+	if !ok {
+		t.Fatalf("unexpected content: %+v", result.Content[0])
+	}
+	cwd, value, ok := strings.Cut(text.Text, "|")
+	if !ok || value != "synthetic" {
+		t.Fatalf("unexpected cwd/environment result: %q", text.Text)
+	}
+	actual, err := os.Stat(cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := registry(m)["mcp__local__repo_lookup"].Execute(context.Background(), json.RawMessage(`{}`), nil)
-	if err != nil || result.Content[0].(provider.TextBlock).Text != canonicalProject+"|synthetic" {
-		t.Fatalf("result=%+v err=%v", result, err)
+	expected, err := os.Stat(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows short paths and symlinked temp paths can name the same directory.
+	if !os.SameFile(actual, expected) {
+		t.Fatalf("subprocess cwd %q is not project directory %q", cwd, project)
 	}
 	process := m.servers["local"].process
 	m.Close()
